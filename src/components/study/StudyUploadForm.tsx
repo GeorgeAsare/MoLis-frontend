@@ -7,7 +7,11 @@ import { Button } from '@/components/ui/Button'
 const ACCEPTED = '.pdf,.doc,.docx,.txt,.ppt,.pptx'
 const ACCEPTED_LABEL = 'PDF, Word, PowerPoint, or plain text'
 
-export function StudyUploadForm() {
+interface Props {
+  onUploadSuccess?: () => void
+}
+
+export function StudyUploadForm({ onUploadSuccess }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [loading, setLoading] = useState(false)
@@ -73,6 +77,7 @@ export function StudyUploadForm() {
     setStatus({ type: 'success', message: 'Document uploaded. MoLis is processing it.' })
     setFile(null)
     setLoading(false)
+    onUploadSuccess?.()
   }
 
   return (
@@ -142,20 +147,6 @@ export function StudyUploadForm() {
           Upload document
         </Button>
       </div>
-
-      {/* Empty documents state */}
-      <div className="mt-6 border-t border-white/[0.06] pt-6">
-        <p className="mb-4 text-xs font-medium uppercase tracking-widest text-white/20">
-          Your documents
-        </p>
-        <div className="flex flex-col items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] py-10 text-center">
-          <DocumentsEmptyIcon className="mb-3 h-8 w-8 text-white/10" />
-          <p className="text-sm text-white/30">No documents uploaded yet</p>
-          <p className="mt-1 text-xs text-white/20">
-            Uploaded files will appear here
-          </p>
-        </div>
-      </div>
     </form>
   )
 }
@@ -172,14 +163,6 @@ function FileIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-    </svg>
-  )
-}
-
-function DocumentsEmptyIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" />
     </svg>
   )
 }
