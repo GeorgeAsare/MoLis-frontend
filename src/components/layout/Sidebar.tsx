@@ -46,13 +46,13 @@ export function Sidebar() {
               href={href}
               className={`group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all duration-150 ${
                 active
-                  ? 'bg-white/10 text-white'
-                  : 'text-white/40 hover:bg-white/[0.06] hover:text-white/70'
+                  ? 'bg-violet-500/[0.12] text-white ring-1 ring-inset ring-violet-500/10'
+                  : 'text-white/40 hover:bg-white/[0.05] hover:text-white/70'
               }`}
             >
               <Icon
                 className={`h-4 w-4 shrink-0 transition-colors ${
-                  active ? 'text-violet-400' : 'text-white/30 group-hover:text-white/50'
+                  active ? 'text-violet-400' : 'text-white/25 group-hover:text-white/50'
                 }`}
               />
               {label}
@@ -67,11 +67,13 @@ export function Sidebar() {
           href="/dashboard/onboarding"
           className={`group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all duration-150 ${
             pathname === '/dashboard/onboarding'
-              ? 'bg-white/10 text-white'
-              : 'text-white/30 hover:bg-white/[0.06] hover:text-white/50'
+              ? 'bg-violet-500/[0.12] text-white ring-1 ring-inset ring-violet-500/10'
+              : 'text-white/30 hover:bg-white/[0.05] hover:text-white/50'
           }`}
         >
-          <SettingsIcon className="h-4 w-4 shrink-0 text-white/20 group-hover:text-white/40 transition-colors" />
+          <SettingsIcon className={`h-4 w-4 shrink-0 transition-colors ${
+            pathname === '/dashboard/onboarding' ? 'text-violet-400' : 'text-white/20 group-hover:text-white/40'
+          }`} />
           Setup
         </Link>
         <button
