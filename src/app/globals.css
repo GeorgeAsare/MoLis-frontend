@@ -36,3 +36,28 @@ body {
     animation: pulse-slow 3s ease-in-out infinite;
   }
 }
+
+/* DOCX viewer prose styles — dark theme */
+.docx-content h1 { font-size: 1.5rem; font-weight: 600; margin: 1.5rem 0 0.75rem; color: rgba(255,255,255,0.90); }
+.docx-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: rgba(255,255,255,0.85); }
+.docx-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: rgba(255,255,255,0.80); }
+.docx-content h4, .docx-content h5, .docx-content h6 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.35rem; color: rgba(255,255,255,0.75); }
+.docx-content p { margin: 0.5rem 0; line-height: 1.7; }
+.docx-content ul, .docx-content ol { margin: 0.5rem 0 0.5rem 1.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.docx-content ul { list-style-type: disc; }
+.docx-content ol { list-style-type: decimal; }
+.docx-content li { line-height: 1.65; }
+.docx-content strong, .docx-content b { font-weight: 600; color: rgba(255,255,255,0.88); }
+.docx-content em, .docx-content i { font-style: italic; }
+.docx-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.875rem; }
+.docx-content th { border: 1px solid rgba(255,255,255,0.1); padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.04); text-align: left; font-weight: 600; color: rgba(255,255,255,0.70); }
+.docx-content td { border: 1px solid rgba(255,255,255,0.07); padding: 0.5rem 0.75rem; }
+.docx-content blockquote { border-left: 3px solid rgba(139,92,246,0.4); padding-left: 1rem; margin: 0.75rem 0; color: rgba(255,255,255,0.50); font-style: italic; }
+.docx-content pre, .docx-content code { font-family: monospace; font-size: 0.85em; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.1em 0.35em; }
+.docx-content pre { padding: 0.75rem 1rem; overflow-x: auto; }
+.docx-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 1.25rem 0; }
+.docx-content a { color: rgba(167,139,250,0.85); text-decoration: underline; text-underline-offset: 2px; }
+
+/* react-pdf dark theme overrides */
+.react-pdf__Page__canvas { border-radius: 8px; }
+.react-pdf__Page__textContent { color: transparent; }

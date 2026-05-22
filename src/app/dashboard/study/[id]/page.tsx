@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { DocumentPreview } from '@/components/study/DocumentPreview'
 
 export const metadata = {
   title: 'Document Workspace — MoLis',
@@ -45,6 +46,12 @@ export default async function DocumentWorkspacePage({
 
   if (error || !doc) notFound()
   if (doc.user_id !== user.id) notFound()
+
+  const { data: signedData } = await supabase.storage
+    .from('study-documents')
+    .createSignedUrl(doc.file_path, 3600)
+
+  const signedUrl = signedData?.signedUrl ?? null
 
   const label = fileTypeLabel(doc.file_type)
   const date = formatDate(doc.created_at)
@@ -146,25 +153,18 @@ export default async function DocumentWorkspacePage({
 
           {/* Document preview */}
           <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.025]">
-            <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <FileIcon className="h-4 w-4 text-white/30" />
-                <span className="text-sm font-medium text-white/70">Document Preview</span>
+            {signedUrl ? (
+              <DocumentPreview
+                fileType={doc.file_type}
+                signedUrl={signedUrl}
+                title={doc.title}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <p className="text-sm text-white/30">Could not load document.</p>
+                <p className="mt-1 text-xs text-white/20">The file link may have expired — reload the page.</p>
               </div>
-              <span className="rounded-full border border-amber-500/20 bg-amber-500/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-amber-400/70">
-                Preview unavailable
-              </span>
-            </div>
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-violet-500/20 bg-violet-500/[0.08]">
-                <FileIcon className="h-6 w-6 text-violet-400/50" />
-              </div>
-              <p className="text-sm font-medium text-white/40">{doc.title}</p>
-              <p className="mt-1 text-xs text-white/20">{label} document</p>
-              <p className="mt-4 max-w-xs text-xs leading-relaxed text-white/15">
-                In-browser document preview is coming in a future update.
-              </p>
-            </div>
+            )}
           </div>
 
           {/* AI analysis placeholder */}
