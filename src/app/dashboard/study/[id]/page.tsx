@@ -2,6 +2,14 @@ import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { DocumentPreview } from '@/components/study/DocumentPreview'
+import { ExtractionPanel } from '@/components/study/ExtractionPanel'
+import { AIActionsSection } from '@/components/study/AIActionsSection'
+import { RevisionNotesPanel } from '@/components/study/RevisionNotesPanel'
+import { QuizPanel } from '@/components/study/QuizPanel'
+import { WeakTopicsPanel } from '@/components/study/WeakTopicsPanel'
+import type { RevisionNote } from '@/types/revisionNotes'
+import type { Quiz } from '@/types/quiz'
+import type { WeakTopic } from '@/types/weakTopic'
 
 export const metadata = {
   title: 'Document Workspace — MoLis',
@@ -40,7 +48,7 @@ export default async function DocumentWorkspacePage({
 
   const { data: doc, error } = await supabase
     .from('documents')
-    .select('id, user_id, title, file_path, file_type, created_at')
+    .select('id, user_id, title, file_path, file_type, created_at, extracted_text')
     .eq('id', id)
     .single()
 
@@ -52,6 +60,38 @@ export default async function DocumentWorkspacePage({
     .createSignedUrl(doc.file_path, 3600)
 
   const signedUrl = signedData?.signedUrl ?? null
+
+  const { data: existingNotes } = await supabase
+    .from('revision_notes')
+    .select('*')
+    .eq('document_id', id)
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const initialNotes = (existingNotes as RevisionNote | null) ?? null
+
+  const { data: existingQuiz } = await supabase
+    .from('quizzes')
+    .select('*')
+    .eq('document_id', id)
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const initialQuiz = (existingQuiz as Quiz | null) ?? null
+
+  const { data: weakTopicsData } = await supabase
+    .from('weak_topics')
+    .select('*')
+    .eq('document_id', id)
+    .eq('user_id', user.id)
+    .order('weakness_score', { ascending: false })
+    .limit(10)
+
+  const weakTopics = (weakTopicsData as WeakTopic[] | null) ?? []
 
   const label = fileTypeLabel(doc.file_type)
   const date = formatDate(doc.created_at)
@@ -109,32 +149,11 @@ export default async function DocumentWorkspacePage({
           </section>
 
           {/* AI actions */}
-          <section>
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-white/20">
-              AI Actions
-            </p>
-            <div className="flex flex-col gap-2">
-              <button
-                disabled
-                title="AI integration coming soon"
-                className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-lg border border-violet-500/20 bg-violet-500/[0.08] px-3 py-2.5 text-left text-sm font-medium text-violet-300/50 opacity-60"
-              >
-                <SparklesIcon className="h-4 w-4 shrink-0" />
-                Generate Revision Notes
-              </button>
-              <button
-                disabled
-                title="AI integration coming soon"
-                className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 text-left text-sm font-medium text-white/30 opacity-60"
-              >
-                <QuizIcon className="h-4 w-4 shrink-0" />
-                Generate Quiz
-              </button>
-            </div>
-            <p className="mt-2.5 text-center text-[11px] text-white/15">
-              AI features coming soon
-            </p>
-          </section>
+          <AIActionsSection
+            hasExtractedText={!!doc.extracted_text}
+            hasNotes={!!initialNotes}
+            hasQuiz={!!initialQuiz}
+          />
 
           {/* Back link */}
           <section className="mt-auto">
@@ -167,40 +186,27 @@ export default async function DocumentWorkspacePage({
             )}
           </div>
 
-          {/* AI analysis placeholder */}
-          <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.025]">
-            <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <SparklesIcon className="h-4 w-4 text-violet-400/40" />
-                <span className="text-sm font-medium text-white/70">AI Analysis</span>
-              </div>
-              <span className="rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-white/20">
-                Not started
-              </span>
-            </div>
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-white/[0.07] bg-white/[0.03]">
-                <SparklesIcon className="h-5 w-5 text-white/15" />
-              </div>
-              <p className="text-sm text-white/30">No analysis yet</p>
-              <p className="mt-1 max-w-xs text-xs leading-relaxed text-white/18">
-                Use the AI Actions panel to generate revision notes or a quiz from this document.
-              </p>
-            </div>
-            {/* Ghost result rows — shown dimmed as structural preview */}
-            <div className="flex flex-col gap-2 border-t border-white/[0.05] p-4 opacity-20">
-              {[48, 72, 56].map((w, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2.5"
-                >
-                  <div className="h-2 w-2 shrink-0 rounded-full bg-violet-500/40" />
-                  <div className="h-3 flex-1 rounded-full bg-white/[0.06]" />
-                  <div className="h-3 rounded-full bg-white/[0.06]" style={{ width: w }} />
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* Text extraction */}
+          <ExtractionPanel
+            documentId={doc.id}
+            fileType={doc.file_type}
+            signedUrl={signedUrl}
+            initialExtractedText={doc.extracted_text ?? null}
+          />
+
+          {/* Revision notes */}
+          <RevisionNotesPanel
+            documentId={doc.id}
+            hasExtractedText={!!doc.extracted_text}
+            initialNotes={initialNotes}
+          />
+
+          {/* Quiz */}
+          <QuizPanel
+            documentId={doc.id}
+            hasExtractedText={!!doc.extracted_text}
+            initialQuiz={initialQuiz}
+          />
         </main>
 
         {/* Right sidebar */}
@@ -255,24 +261,7 @@ export default async function DocumentWorkspacePage({
             </div>
           </div>
 
-          {/* Revision material counters */}
-          <div className="flex flex-col gap-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white/20">
-              Revision Material
-            </p>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 opacity-40">
-                <NotesIcon className="h-4 w-4 text-white/20" />
-                <span className="flex-1 text-xs text-white/30">Revision notes</span>
-                <span className="text-xs font-medium text-white/20">0</span>
-              </div>
-              <div className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 opacity-40">
-                <QuizIcon className="h-4 w-4 text-white/20" />
-                <span className="flex-1 text-xs text-white/30">Quiz questions</span>
-                <span className="text-xs font-medium text-white/20">0</span>
-              </div>
-            </div>
-          </div>
+          <WeakTopicsPanel weakTopics={weakTopics} />
         </aside>
       </div>
     </div>
@@ -305,14 +294,6 @@ function SparklesIcon({ className }: { className?: string }) {
   )
 }
 
-function QuizIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
-    </svg>
-  )
-}
-
 function SendIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -325,14 +306,6 @@ function EditIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
-    </svg>
-  )
-}
-
-function NotesIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
     </svg>
   )
 }

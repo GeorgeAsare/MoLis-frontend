@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import type { WeakTopic } from '@/types/weakTopic'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
@@ -66,6 +67,21 @@ export default async function DashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
 
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
+
+  const { data: topWeakTopicsData } = user
+    ? await supabase
+        .from('weak_topics')
+        .select('id, topic, weakness_score, last_seen, document_id')
+        .eq('user_id', user.id)
+        .order('weakness_score', { ascending: false })
+        .limit(3)
+    : { data: null }
+
+  const topWeakTopics = (topWeakTopicsData as Pick<
+    WeakTopic,
+    'id' | 'topic' | 'weakness_score' | 'last_seen' | 'document_id'
+  >[] | null) ?? []
+
   const hour = new Date().getHours()
   const greeting =
     hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -127,6 +143,65 @@ export default async function DashboardPage() {
             </div>
           </Link>
         ))}
+      </div>
+
+      {/* ── Adaptive Learning ──────────────────────────────────────────── */}
+      <div className="mb-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <p className="text-[13px] font-medium text-white/70">Adaptive Learning</p>
+            <p className="mt-0.5 text-xs text-white/25">Your weakest topics across all documents</p>
+          </div>
+          <TargetIcon className="h-4 w-4 text-white/15" />
+        </div>
+
+        {topWeakTopics.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-6 text-center">
+            <p className="text-sm text-white/30">No weak topics detected yet</p>
+            <p className="mt-1 max-w-xs text-xs leading-relaxed text-white/18">
+              Complete a quiz to start adaptive tracking.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {topWeakTopics.map((wt) => {
+              const score = wt.weakness_score
+              const accentText =
+                score >= 4 ? 'text-red-400' : score >= 2 ? 'text-orange-400' : 'text-yellow-400/90'
+              const accentBadge =
+                score >= 4
+                  ? 'border-red-500/25 bg-red-500/[0.08] text-red-400'
+                  : score >= 2
+                    ? 'border-orange-500/20 bg-orange-500/[0.07] text-orange-400'
+                    : 'border-yellow-500/20 bg-yellow-500/[0.07] text-yellow-400/90'
+              const dot =
+                score >= 4 ? 'bg-red-400/70' : score >= 2 ? 'bg-orange-400/70' : 'bg-yellow-400/60'
+
+              return (
+                <div
+                  key={wt.id}
+                  className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
+                >
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+                  <span className={`flex-1 truncate text-sm font-medium ${accentText}`}>
+                    {wt.topic}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${accentBadge}`}
+                  >
+                    ×{score}
+                  </span>
+                </div>
+              )
+            })}
+            <Link
+              href="/dashboard/study"
+              className="mt-1 text-right text-[11px] text-white/20 transition-colors hover:text-white/40"
+            >
+              View study documents →
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* ── Daily Digest ───────────────────────────────────────────────── */}
@@ -205,6 +280,14 @@ function ClockIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+    </svg>
+  )
+}
+
+function TargetIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
     </svg>
   )
 }

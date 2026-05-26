@@ -5,4 +5,5 @@ export interface StudyDocument {
   file_path: string
   file_type: string
   created_at: string
+  extracted_text?: string | null
 }
