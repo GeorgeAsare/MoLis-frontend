@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { askTutor } from '@/app/actions/tutor'
+import { gradeCheckAnswer } from '@/app/actions/gradeCheckAnswer'
 import { appendTutorMessage, clearTutorMessages } from '@/app/actions/tutorMessages'
-import type { TutorMessage, TutorMode } from '@/types/tutor'
+import type { CheckMeta, TutorAction, TutorMessage, TutorMode } from '@/types/tutor'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -36,29 +37,43 @@ const SUGGESTED_PROMPTS: { label: string; text: string; mode: TutorMode }[] = [
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
+// Maps action type to the tab name expected by StudySetView
+const ACTION_TAB: Record<string, string> = {
+  open_notes:       'notes',
+  open_flashcards:  'flashcards',
+  open_quiz:        'quiz',
+  open_visuals:     'visuals',
+  open_weak_topics: 'weak-topics',
+  continue_tutor:   'tutor',
+}
+
 interface Props {
   documentId: string
   initialMessages?: TutorMessage[]
+  onAction?: (tab: string) => void
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function TutorPanel({ documentId, initialMessages = [] }: Props) {
-  const [messages, setMessages]   = useState<TutorMessage[]>(initialMessages)
-  const [input, setInput]         = useState('')
-  const [mode, setMode]           = useState<TutorMode>('explain')
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState<string | null>(null)
-  const bottomRef                 = useRef<HTMLDivElement>(null)
-  const textareaRef               = useRef<HTMLTextAreaElement>(null)
+export function TutorPanel({ documentId, initialMessages = [], onAction }: Props) {
+  const [messages, setMessages]         = useState<TutorMessage[]>(initialMessages)
+  const [input, setInput]               = useState('')
+  const [mode, setMode]                 = useState<TutorMode>('explain')
+  const [loading, setLoading]           = useState(false)
+  const [error, setError]               = useState<string | null>(null)
+  const [pendingCheck, setPendingCheck] = useState<CheckMeta | null>(null)
+  const [masteryBanner, setMasteryBanner] = useState<{ correct: boolean; concept_title: string; brief_feedback: string } | null>(null)
+  const bottomRef                       = useRef<HTMLDivElement>(null)
+  const textareaRef                     = useRef<HTMLTextAreaElement>(null)
+  const bannerTimer                     = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
   async function send(overrideText?: string, overrideMode?: TutorMode) {
-    const q    = (overrideText ?? input).trim()
-    const m    = overrideMode ?? mode
+    const q = (overrideText ?? input).trim()
+    const m = overrideMode ?? mode
     if (!q || loading) return
 
     setInput('')
@@ -68,22 +83,38 @@ export function TutorPanel({ documentId, initialMessages = [] }: Props) {
     setMessages(prev => [...prev, userMsg])
     setLoading(true)
 
+    // Snapshot current pending check — do NOT clear it yet; restore if student asked a follow-up
+    const checkToGrade = pendingCheck
+    const lastTutorMsg = messages.findLast(msg => msg.role === 'assistant')?.content ?? ''
+
     try {
-      const res = await askTutor({
-        documentId,
-        question: q,
-        mode: m,
-        recentMessages: messages.slice(-6),
-      })
+      const [res, gradeResult] = await Promise.all([
+        askTutor({ documentId, question: q, mode: m, recentMessages: messages.slice(-6) }),
+        checkToGrade
+          ? gradeCheckAnswer(documentId, { studentAnswer: q, lastTutorMessage: lastTutorMsg, checkMeta: checkToGrade }).catch(() => null)
+          : Promise.resolve(null),
+      ])
+
       const assistantMsg: TutorMessage = {
         role: 'assistant',
         content: res.answer,
         mode: res.mode,
         timestamp: Date.now(),
+        ...(res.suggestedAction ? { suggestedAction: res.suggestedAction } : {}),
       }
       setMessages(prev => [...prev, assistantMsg])
       appendTutorMessage(documentId, { role: 'user', content: q, mode: m }).catch(() => {})
       appendTutorMessage(documentId, { role: 'assistant', content: res.answer, mode: res.mode }).catch(() => {})
+
+      // If graded: check was answered, consume it (use new check from response if any)
+      // If not graded: student asked a follow-up, restore old check (unless response added a newer one)
+      setPendingCheck(res.checkMeta ?? (gradeResult ? null : checkToGrade))
+
+      if (gradeResult) {
+        setMasteryBanner(gradeResult)
+        if (bannerTimer.current) clearTimeout(bannerTimer.current)
+        bannerTimer.current = setTimeout(() => setMasteryBanner(null), 4000)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to get a response. Please try again.')
       setMessages(prev => prev.slice(0, -1))
@@ -138,7 +169,7 @@ export function TutorPanel({ documentId, initialMessages = [] }: Props) {
       ) : (
         <div className="flex flex-col gap-4">
           {messages.map((msg, i) => (
-            <MessageBubble key={i} msg={msg} />
+            <MessageBubble key={i} msg={msg} onAction={onAction} />
           ))}
           {loading && <ThinkingBubble />}
           <div ref={bottomRef} />
@@ -149,6 +180,39 @@ export function TutorPanel({ documentId, initialMessages = [] }: Props) {
       {error && (
         <div className="rounded-xl border border-red-500/20 bg-red-500/[0.07] px-4 py-3 text-xs leading-relaxed text-red-400">
           {error}
+        </div>
+      )}
+
+      {/* Pending check indicator */}
+      {pendingCheck && !loading && (
+        <div className="flex items-center gap-2 rounded-xl border border-primary/15 bg-primary/[0.05] px-3.5 py-2 text-xs">
+          <span className="shrink-0 text-foreground/35">Check question pending:</span>
+          <span className="truncate font-medium text-primary/80">{pendingCheck.concept_title}</span>
+          <button
+            onClick={() => setPendingCheck(null)}
+            className="ml-auto shrink-0 text-foreground/25 transition-colors hover:text-foreground/50"
+          >
+            Skip
+          </button>
+        </div>
+      )}
+
+      {/* Mastery update banner */}
+      {masteryBanner && (
+        <div className={[
+          'rounded-xl border px-4 py-2.5 text-xs leading-relaxed transition-all',
+          masteryBanner.correct
+            ? 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400'
+            : 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400',
+        ].join(' ')}>
+          <span className="font-semibold">
+            {masteryBanner.correct ? 'Mastery updated ✓' : 'Mastery updated'}
+          </span>
+          {' · '}
+          <span className="opacity-80">{masteryBanner.concept_title}</span>
+          {masteryBanner.brief_feedback && (
+            <span className="opacity-60"> · {masteryBanner.brief_feedback}</span>
+          )}
         </div>
       )}
 
@@ -178,6 +242,9 @@ export function TutorPanel({ documentId, initialMessages = [] }: Props) {
         <button
           onClick={() => {
             setMessages([])
+            setPendingCheck(null)
+            setMasteryBanner(null)
+            if (bannerTimer.current) clearTimeout(bannerTimer.current)
             clearTutorMessages(documentId).catch(() => {})
           }}
           className="self-start text-[11px] text-foreground/22 transition-colors hover:text-foreground/45"
@@ -233,7 +300,13 @@ function EmptyState({
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg }: { msg: TutorMessage }) {
+function MessageBubble({
+  msg,
+  onAction,
+}: {
+  msg: TutorMessage
+  onAction?: (tab: string) => void
+}) {
   const isUser = msg.role === 'user'
 
   if (isUser) {
@@ -252,13 +325,18 @@ function MessageBubble({ msg }: { msg: TutorMessage }) {
         <div className="mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/10">
           <TutorDotIcon className="h-3 w-3 text-primary" />
         </div>
-        <div className="flex-1 rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-3">
-          {msg.mode && (
-            <span className="mb-2 inline-block rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-foreground/30">
-              {MODE_LABEL[msg.mode]}
-            </span>
+        <div className="flex-1 flex flex-col gap-2">
+          <div className="rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-3">
+            {msg.mode && (
+              <span className="mb-2 inline-block rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-foreground/30">
+                {MODE_LABEL[msg.mode]}
+              </span>
+            )}
+            <TutorContent content={msg.content} />
+          </div>
+          {msg.suggestedAction && onAction && (
+            <ActionButton action={msg.suggestedAction} onAction={onAction} />
           )}
-          <p className="whitespace-pre-wrap text-sm leading-7 text-foreground/78">{msg.content}</p>
         </div>
       </div>
     </div>
@@ -280,6 +358,85 @@ function ThinkingBubble() {
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground/25 [animation-delay:300ms]" />
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── ActionButton ──────────────────────────────────────────────────────────────
+
+function ActionButton({ action, onAction }: { action: TutorAction; onAction: (tab: string) => void }) {
+  const tab = ACTION_TAB[action.type]
+  if (!tab) return null
+
+  return (
+    <button
+      onClick={() => onAction(tab)}
+      className="flex w-fit items-center gap-2 rounded-xl border border-primary/20 bg-primary/[0.06] px-3.5 py-2 text-xs font-medium text-primary/80 transition-colors hover:border-primary/35 hover:bg-primary/[0.12]"
+    >
+      <ActionIcon type={action.type} className="h-3.5 w-3.5 shrink-0" />
+      {action.label}
+      {action.concept_title && (
+        <span className="ml-0.5 text-primary/50">· {action.concept_title}</span>
+      )}
+    </button>
+  )
+}
+
+function ActionIcon({ type, className }: { type: string; className?: string }) {
+  if (type === 'open_flashcards') return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3" />
+    </svg>
+  )
+  if (type === 'open_quiz') return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
+    </svg>
+  )
+  if (type === 'open_notes') return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+    </svg>
+  )
+  if (type === 'open_weak_topics') return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+    </svg>
+  )
+  // open_visuals, continue_tutor, fallback
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+    </svg>
+  )
+}
+
+// ── TutorContent — renders text with fenced code blocks ───────────────────────
+
+function TutorContent({ content }: { content: string }) {
+  // Split on fenced code blocks: ```lang\n...\n```
+  const parts = content.split(/(```[\w]*\n[\s\S]*?```)/g)
+
+  return (
+    <div className="text-sm leading-7 text-foreground/78">
+      {parts.map((part, i) => {
+        const codeMatch = part.match(/^```([\w]*)\n([\s\S]*?)```$/)
+        if (codeMatch) {
+          const lang = codeMatch[1]
+          const code = codeMatch[2].replace(/\n$/, '')
+          return (
+            <div key={i} className="my-3 overflow-x-auto rounded-lg border border-border bg-muted/50">
+              {lang && (
+                <div className="border-b border-border px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-foreground/30">
+                  {lang}
+                </div>
+              )}
+              <pre className="px-4 py-3 text-xs leading-6 text-foreground/80 font-mono"><code>{code}</code></pre>
+            </div>
+          )
+        }
+        return part ? <span key={i} className="whitespace-pre-wrap">{part}</span> : null
+      })}
     </div>
   )
 }

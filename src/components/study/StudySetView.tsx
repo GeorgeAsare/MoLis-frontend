@@ -232,7 +232,11 @@ export function StudySetView({
           </div>
 
           <div className={activeTab !== 'tutor' ? 'hidden' : ''}>
-            <TutorPanel documentId={doc.id} initialMessages={initialTutorMessages} />
+            <TutorPanel
+              documentId={doc.id}
+              initialMessages={initialTutorMessages}
+              onAction={(tab) => handleTabChange(tab as Tab)}
+            />
           </div>
 
         </div>
