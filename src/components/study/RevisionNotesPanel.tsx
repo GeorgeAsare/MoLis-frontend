@@ -4,11 +4,13 @@ import { useEffect, useRef, useState } from 'react'
 import { generateRevisionNotes } from '@/app/actions/revisionNotes'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { RevisionNote } from '@/types/revisionNotes'
+import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
 interface Props {
   documentId: string
   hasExtractedText: boolean
   initialNotes: RevisionNote | null
+  analysis?: DocumentAnalysis | null
 }
 
 type Phase = 'idle' | 'generating' | 'done' | 'error'
@@ -26,6 +28,7 @@ export function RevisionNotesPanel({
   documentId,
   hasExtractedText,
   initialNotes,
+  analysis,
 }: Props) {
   const [phase, setPhase] = useState<Phase>(initialNotes ? 'done' : 'idle')
   const [notes, setNotes] = useState<RevisionNote | null>(initialNotes)
@@ -73,19 +76,19 @@ export function RevisionNotesPanel({
   }
 
   return (
-    <div id="revision-notes" className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.025]">
+    <div id="revision-notes" className="overflow-hidden rounded-xl border border-border bg-card">
 
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3.5">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
         <div className="flex items-center gap-2">
-          <SparklesIcon className="h-4 w-4 text-violet-400/60" />
-          <span className="text-sm font-medium text-white/70">Revision Notes</span>
+          <SparklesIcon className="h-4 w-4 text-primary/60" />
+          <span className="text-sm font-medium text-foreground/70">Revision Notes</span>
         </div>
         <div className="flex items-center gap-2">
           {phase === 'done' && notes && (
             <button
               onClick={triggerGenerate}
-              className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-xs text-white/35 transition-colors hover:border-white/[0.12] hover:text-white/55"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55"
             >
               <RegenerateIcon className="h-3 w-3" />
               Regenerate
@@ -101,15 +104,17 @@ export function RevisionNotesPanel({
         {/* Idle — not yet generated */}
         {phase === 'idle' && (
           <div className="flex flex-col gap-4">
-            <p className="text-sm leading-relaxed text-white/35">
-              {hasExtractedText
-                ? 'Generate AI-powered revision notes — key concepts, bullet points, definitions, and exam tips — from your extracted document text.'
-                : 'Text extraction is required before generating revision notes.'}
+            <p className="text-sm leading-relaxed text-foreground/35">
+              {!hasExtractedText
+                ? 'Text extraction is required before generating revision notes.'
+                : analysis
+                  ? `Analysis found ${analysis.key_concepts.length} key concepts, ${analysis.definitions.length} definitions, and ${analysis.likely_exam_topics.length} exam topics. Notes will be structured around these.`
+                  : 'Generate AI-powered revision notes — key concepts, bullet points, definitions, and exam tips — from your extracted document text.'}
             </p>
             <button
               onClick={triggerGenerate}
               disabled={!hasExtractedText}
-              className="inline-flex w-fit items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15] disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <SparklesIcon className="h-4 w-4" />
               Generate Revision Notes
@@ -126,7 +131,7 @@ export function RevisionNotesPanel({
             </div>
             <button
               onClick={triggerGenerate}
-              className="inline-flex w-fit items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15]"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
             >
               <SparklesIcon className="h-4 w-4" />
               Try Again
@@ -138,19 +143,19 @@ export function RevisionNotesPanel({
         {phase === 'generating' && (
           <div className="flex flex-col gap-6">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-violet-500/20 bg-violet-500/10">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border border-violet-400/60 border-t-transparent" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
               </div>
               <div className="flex flex-col gap-1">
-                <p className="text-sm font-medium text-white/60">
+                <p className="text-sm font-medium text-foreground/60">
                   {GENERATION_MESSAGES[msgIndex]}
                 </p>
-                <p className="text-xs text-white/25">Powered by GPT-4o mini</p>
+                <p className="text-xs text-foreground/25">Powered by GPT-4o mini</p>
               </div>
             </div>
 
             {/* Summary skeleton */}
-            <div className="flex flex-col gap-2 rounded-xl border border-violet-500/10 bg-violet-500/[0.04] p-4">
+            <div className="flex flex-col gap-2 rounded-xl border border-primary/10 bg-primary/[0.04] p-4">
               <Skeleton className="h-3 w-16 rounded-full" />
               <div className="mt-1 flex flex-col gap-1.5">
                 {[100, 92, 85, 78].map((w, i) => (
@@ -205,10 +210,10 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
 
       {/* Title + metadata */}
       <div>
-        <h2 className="text-base font-semibold leading-snug text-white/85">
+        <h2 className="text-base font-semibold leading-snug text-foreground/85">
           {notes.title}
         </h2>
-        <p className="mt-1 text-xs text-white/20">
+        <p className="mt-1 text-xs text-foreground/20">
           Generated {generatedAt} · {notes.model}
         </p>
       </div>
@@ -216,8 +221,8 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
       {/* Summary */}
       <div className="flex flex-col gap-2">
         <SectionLabel>Summary</SectionLabel>
-        <div className="rounded-xl border border-violet-500/[0.12] bg-violet-500/[0.05] px-5 py-4">
-          <p className="text-sm leading-relaxed text-white/65">{notes.summary}</p>
+        <div className="rounded-xl border border-primary/[0.12] bg-primary/[0.05] px-5 py-4">
+          <p className="text-sm leading-relaxed text-foreground/65">{notes.summary}</p>
         </div>
       </div>
 
@@ -229,7 +234,7 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
             {notes.key_concepts.map((concept, i) => (
               <span
                 key={i}
-                className="rounded-full border border-violet-500/20 bg-violet-500/[0.08] px-3 py-1 text-xs font-medium text-violet-300/80"
+                className="rounded-full border border-primary/20 bg-primary/[0.08] px-3 py-1 text-xs font-medium text-primary/80"
               >
                 {concept}
               </span>
@@ -245,10 +250,10 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
           <ol className="flex flex-col gap-2.5">
             {notes.bullet_points.map((point, i) => (
               <li key={i} className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-violet-500/20 bg-violet-500/10 text-[10px] font-semibold text-violet-400/80">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-[10px] font-semibold text-primary/80">
                   {i + 1}
                 </span>
-                <span className="text-sm leading-relaxed text-white/65">{point}</span>
+                <span className="text-sm leading-relaxed text-foreground/65">{point}</span>
               </li>
             ))}
           </ol>
@@ -263,12 +268,12 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
             {notes.definitions.map(({ term, definition }, i) => (
               <div
                 key={i}
-                className="flex flex-col gap-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3 sm:flex-row sm:gap-3"
+                className="flex flex-col gap-1 rounded-lg border border-border bg-muted/30 px-4 py-3 sm:flex-row sm:gap-3"
               >
-                <span className="w-full shrink-0 text-xs font-semibold text-white/70 sm:w-36">
+                <span className="w-full shrink-0 text-xs font-semibold text-foreground/70 sm:w-36">
                   {term}
                 </span>
-                <span className="text-sm leading-relaxed text-white/50">
+                <span className="text-sm leading-relaxed text-foreground/50">
                   {definition}
                 </span>
               </div>
@@ -288,7 +293,7 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
                 className="flex items-start gap-3 rounded-lg border border-amber-500/[0.12] bg-amber-500/[0.05] px-4 py-3"
               >
                 <LightningIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-400/70" />
-                <span className="text-sm leading-relaxed text-white/60">{tip}</span>
+                <span className="text-sm leading-relaxed text-foreground/60">{tip}</span>
               </div>
             ))}
           </div>
@@ -302,7 +307,7 @@ function NotesDisplay({ notes }: { notes: RevisionNote }) {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white/25">
+    <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/25">
       {children}
     </p>
   )
@@ -318,8 +323,8 @@ function PhaseBadge({ phase }: { phase: Phase }) {
       )
     case 'generating':
       return (
-        <span className="flex items-center gap-1.5 rounded-full border border-violet-500/20 bg-violet-500/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-violet-400">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+        <span className="flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-primary">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
           Generating
         </span>
       )
@@ -331,7 +336,7 @@ function PhaseBadge({ phase }: { phase: Phase }) {
       )
     default:
       return (
-        <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-white/25">
+        <span className="rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-[11px] text-foreground/25">
           Not generated
         </span>
       )

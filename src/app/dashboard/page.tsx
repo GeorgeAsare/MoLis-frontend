@@ -1,14 +1,14 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/components/animations'
+import { NeuralOrb } from '@/components/ui/NeuralOrb'
 import type { WeakTopic } from '@/types/weakTopic'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// ── Card config ───────────────────────────────────────────────────────────
 
 interface StatCard {
   href: string
@@ -16,24 +16,20 @@ interface StatCard {
   description: string
   stat: string
   statLabel: string
-  accent: string
-  ring: string
+  accentText: string
+  ringClass: string
   icon: React.ComponentType<{ className?: string }>
 }
-
-// ---------------------------------------------------------------------------
-// Card definitions — stat/statLabel are live-data-ready zero states
-// ---------------------------------------------------------------------------
 
 const statCards: StatCard[] = [
   {
     href: '/dashboard/study',
     label: 'Study',
-    description: 'Documents, notes, and exam prep',
+    description: 'Documents, notes, exam prep',
     stat: '0',
     statLabel: 'documents',
-    accent: 'text-violet-400',
-    ring: 'border-violet-500/20 bg-violet-500/10',
+    accentText: 'text-primary',
+    ringClass: 'border-primary/20 bg-primary/[0.08]',
     icon: StudyIcon,
   },
   {
@@ -42,8 +38,8 @@ const statCards: StatCard[] = [
     description: 'Tasks, research, automation',
     stat: '0',
     statLabel: 'active tasks',
-    accent: 'text-purple-400',
-    ring: 'border-purple-500/20 bg-purple-500/10',
+    accentText: 'text-purple-400',
+    ringClass: 'border-purple-500/20 bg-primary/[0.08]',
     icon: AgentsIcon,
   },
   {
@@ -52,15 +48,13 @@ const statCards: StatCard[] = [
     description: 'What MoLis knows about you',
     stat: '0',
     statLabel: 'learned facts',
-    accent: 'text-sky-400',
-    ring: 'border-sky-500/20 bg-sky-500/10',
+    accentText: 'text-sky-400',
+    ringClass: 'border-sky-500/20 bg-sky-500/[0.08]',
     icon: MemoryIcon,
   },
 ]
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+// ── Page ─────────────────────────────────────────────────────────────────
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -87,154 +81,219 @@ export default async function DashboardPage() {
     hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
   return (
-    <div className="flex flex-1 flex-col px-8 py-8 max-w-5xl w-full">
+    <div className="relative min-h-full w-full">
 
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <header className="mb-8">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/20 mb-2">
-          Dashboard
-        </p>
-        <h1 className="text-[1.65rem] font-semibold tracking-tight text-white leading-tight">
-          {greeting}, {name}
-        </h1>
-        <p className="mt-1.5 text-sm text-white/35">
-          Your AI operating system is active and ready.
-        </p>
+      {/* ── Ambient background ──────────────────────────────────────── */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="absolute -top-64 left-1/3 h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-[120px]"
+          style={{ background: 'rgba(190,28,28,0.08)' }}
+        />
+        <div className="absolute inset-0 bg-grid-dots opacity-[0.18]" />
+      </div>
 
-        {/* Status ticker */}
-        <div className="mt-4 flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse-slow" />
-            <span className="text-xs text-white/30">System active</span>
-          </div>
-          <span className="h-3 w-px bg-white/10" />
-          <span className="text-xs text-white/20">MoLis Intelligence</span>
-          <span className="h-3 w-px bg-white/10" />
-          <span className="text-xs text-white/15">v1.0</span>
-        </div>
-      </header>
+      {/* ── Content ─────────────────────────────────────────────────── */}
+      <div className="relative z-10 flex w-full flex-col px-8 py-8">
 
-      {/* ── Stat cards ─────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 mb-3">
-        {statCards.map(({ href, label, description, stat, statLabel, accent, ring, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            className="group relative flex flex-col justify-between gap-5 overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.025] p-5 transition-all duration-200 hover:border-violet-500/20 hover:bg-white/[0.05] hover:ring-1 hover:ring-violet-500/10"
-          >
-            {/* Top row */}
-            <div className="flex items-start justify-between">
-              <div className={`flex h-9 w-9 items-center justify-center rounded-xl border ${ring}`}>
-                <Icon className={`h-[18px] w-[18px] ${accent}`} />
-              </div>
-              <ArrowIcon className="h-3.5 w-3.5 text-white/15 transition-all duration-200 group-hover:text-white/40 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-            </div>
-
-            {/* Stat */}
-            <div>
-              <div className="flex items-baseline gap-1.5 mb-1">
-                <span className="text-2xl font-semibold tracking-tight text-white tabular-nums">
-                  {stat}
+        {/* Header */}
+        <FadeIn className="mb-7">
+          <header>
+            <div className="mb-3.5 flex items-center gap-2.5">
+              <NeuralOrb size="xs" pulse />
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-[0.1em] text-foreground/28">
+                  System active
                 </span>
-                <span className="text-xs text-white/30">{statLabel}</span>
+                <span className="h-3 w-px bg-foreground/10" />
+                <span className="text-[11px] text-foreground/18">MoLis v1.0</span>
               </div>
-              <p className="text-[13px] font-medium text-white/60">{label}</p>
-              <p className="mt-0.5 text-xs text-white/25">{description}</p>
             </div>
-          </Link>
-        ))}
-      </div>
-
-      {/* ── Adaptive Learning ──────────────────────────────────────────── */}
-      <div className="mb-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <p className="text-[13px] font-medium text-white/70">Adaptive Learning</p>
-            <p className="mt-0.5 text-xs text-white/25">Your weakest topics across all documents</p>
-          </div>
-          <TargetIcon className="h-4 w-4 text-white/15" />
-        </div>
-
-        {topWeakTopics.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-6 text-center">
-            <p className="text-sm text-white/30">No weak topics detected yet</p>
-            <p className="mt-1 max-w-xs text-xs leading-relaxed text-white/18">
-              Complete a quiz to start adaptive tracking.
+            <h1 className="text-[1.9rem] font-semibold tracking-[-0.03em] leading-tight text-foreground">
+              {greeting},{' '}
+              <span className="text-gradient-red">{name}</span>
+            </h1>
+            <p className="mt-1.5 text-sm text-foreground/32">
+              Your AI operating system is ready.
             </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {topWeakTopics.map((wt) => {
-              const score = wt.weakness_score
-              const accentText =
-                score >= 4 ? 'text-red-400' : score >= 2 ? 'text-orange-400' : 'text-yellow-400/90'
-              const accentBadge =
-                score >= 4
-                  ? 'border-red-500/25 bg-red-500/[0.08] text-red-400'
-                  : score >= 2
-                    ? 'border-orange-500/20 bg-orange-500/[0.07] text-orange-400'
-                    : 'border-yellow-500/20 bg-yellow-500/[0.07] text-yellow-400/90'
-              const dot =
-                score >= 4 ? 'bg-red-400/70' : score >= 2 ? 'bg-orange-400/70' : 'bg-yellow-400/60'
+          </header>
+        </FadeIn>
 
-              return (
-                <div
-                  key={wt.id}
-                  className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
-                >
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-                  <span className={`flex-1 truncate text-sm font-medium ${accentText}`}>
-                    {wt.topic}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${accentBadge}`}
-                  >
-                    ×{score}
-                  </span>
+        {/* ── Two-column canvas grid ───────────────────────────────── */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px] xl:grid-cols-[minmax(0,1fr)_340px]">
+
+          {/* ── Left column ─────────────────────────────────────────── */}
+          <div className="flex flex-col gap-3">
+
+            {/* Stat cards */}
+            <StaggerContainer className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {statCards.map(({ href, label, description, stat, statLabel, accentText, ringClass, icon: Icon }) => (
+                <StaggerItem key={href}>
+                  <HoverLift className="h-full" lift={-3} scale={1.01}>
+                    <Link
+                      href={href}
+                      className="group relative flex h-full flex-col justify-between gap-5 overflow-hidden rounded-2xl border border-border bg-card p-5 transition-all duration-300 hover:border-primary/20 hover:bg-muted/50"
+                    >
+                      <div className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-300 group-hover:opacity-100 bg-[radial-gradient(ellipse_80%_60%_at_50%_0%,rgba(190,28,28,0.055),transparent)]" />
+                      <div className="absolute bottom-0 left-[20%] right-[20%] h-px bg-gradient-to-r from-transparent via-primary/25 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+
+                      <div className="relative flex items-start justify-between">
+                        <div className={`flex h-9 w-9 items-center justify-center rounded-xl border ${ringClass}`}>
+                          <Icon className={`h-4 w-4 ${accentText}`} />
+                        </div>
+                        <ArrowDiagIcon className="h-3.5 w-3.5 text-foreground/15 transition-all duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-foreground/40" />
+                      </div>
+
+                      <div className="relative">
+                        <div className="mb-1 flex items-baseline gap-1.5">
+                          <span className="text-[1.6rem] font-semibold tracking-tight text-foreground tabular-nums">
+                            {stat}
+                          </span>
+                          <span className="text-xs text-foreground/38">{statLabel}</span>
+                        </div>
+                        <p className="text-[13px] font-medium text-foreground/72">{label}</p>
+                        <p className="mt-0.5 text-xs text-foreground/38">{description}</p>
+                      </div>
+                    </Link>
+                  </HoverLift>
+                </StaggerItem>
+              ))}
+            </StaggerContainer>
+
+            {/* Adaptive Learning */}
+            <SlideUp delay={0.3}>
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-4 flex items-start justify-between">
+                  <div>
+                    <p className="text-[13px] font-semibold text-foreground/75">Adaptive Learning</p>
+                    <p className="mt-0.5 text-xs text-foreground/38">Your weakest topics across all documents</p>
+                  </div>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
+                    <TargetIcon className="h-3.5 w-3.5 text-foreground/32" />
+                  </div>
                 </div>
-              )
-            })}
-            <Link
-              href="/dashboard/study"
-              className="mt-1 text-right text-[11px] text-white/20 transition-colors hover:text-white/40"
-            >
-              View study documents →
-            </Link>
-          </div>
-        )}
-      </div>
 
-      {/* ── Daily Digest ───────────────────────────────────────────────── */}
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-5 transition-all duration-200 hover:border-white/[0.1] hover:bg-white/[0.04]">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <p className="text-[13px] font-medium text-white/70">Daily Digest</p>
-            <p className="mt-0.5 text-xs text-white/25">
-              Study sessions, agent activity, and memory updates
-            </p>
+                {topWeakTopics.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-muted/40">
+                      <TargetIcon className="h-5 w-5 text-foreground/20" />
+                    </div>
+                    <p className="text-sm text-foreground/40">No weak topics detected yet</p>
+                    <p className="mt-1 max-w-xs text-xs leading-relaxed text-foreground/25">
+                      Complete a quiz to start adaptive tracking.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {topWeakTopics.map((wt) => {
+                      const score = wt.weakness_score
+                      const accent =
+                        score >= 4 ? 'text-red-400' : score >= 2 ? 'text-orange-400' : 'text-yellow-400/90'
+                      const badge =
+                        score >= 4
+                          ? 'border-red-500/20 bg-red-500/[0.07] text-red-400'
+                          : score >= 2
+                            ? 'border-orange-500/18 bg-orange-500/[0.06] text-orange-400'
+                            : 'border-yellow-500/18 bg-yellow-500/[0.06] text-yellow-400/90'
+                      const dot =
+                        score >= 4 ? 'bg-red-400/70' : score >= 2 ? 'bg-orange-400/70' : 'bg-yellow-400/60'
+                      return (
+                        <div
+                          key={wt.id}
+                          className="flex items-center gap-3 rounded-xl border border-border bg-muted/30 px-3.5 py-2.5"
+                        >
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+                          <span className={`flex-1 truncate text-sm font-medium ${accent}`}>{wt.topic}</span>
+                          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${badge}`}>
+                            ×{score}
+                          </span>
+                        </div>
+                      )
+                    })}
+                    <Link
+                      href="/dashboard/study"
+                      className="mt-1 text-right text-[11px] text-foreground/25 transition-colors hover:text-foreground/50"
+                    >
+                      View study documents →
+                    </Link>
+                  </div>
+                )}
+              </div>
+            </SlideUp>
           </div>
-          <DigestIcon className="h-4 w-4 text-white/15" />
+
+          {/* ── Right column ────────────────────────────────────────── */}
+          <div className="flex flex-col gap-3">
+
+            {/* Daily Digest */}
+            <SlideUp delay={0.32}>
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-[13px] font-semibold text-foreground/75">Daily Digest</p>
+                    <p className="mt-0.5 text-xs text-foreground/38">Activity &amp; updates</p>
+                  </div>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
+                    <DigestIcon className="h-3.5 w-3.5 text-foreground/32" />
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-center justify-center py-6 text-center">
+                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted/40">
+                    <ClockIcon className="h-4.5 w-4.5 text-foreground/20" />
+                  </div>
+                  <p className="text-sm text-foreground/38">No activity yet</p>
+                  <p className="mt-1 text-xs leading-relaxed text-foreground/22">
+                    Sessions, tasks, and memory additions appear here.
+                  </p>
+                </div>
+              </div>
+            </SlideUp>
+
+            {/* Intelligence Panel */}
+            <SlideUp delay={0.40}>
+              <div className="rounded-2xl border border-border bg-card p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-[13px] font-semibold text-foreground/75">Quick Launch</p>
+                    <p className="mt-0.5 text-xs text-foreground/38">Jump back in</p>
+                  </div>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
+                    <BoltIcon className="h-3.5 w-3.5 text-foreground/32" />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {[
+                    { href: '/dashboard/study',  label: 'Open Study',   sub: 'Documents & AI tools', icon: StudyIcon },
+                    { href: '/dashboard/agents', label: 'Run an Agent', sub: 'Tasks & automation',   icon: AgentsIcon },
+                    { href: '/dashboard/memory', label: 'View Memory',  sub: 'What MoLis knows',     icon: MemoryIcon },
+                  ].map(({ href, label, sub, icon: Icon }) => (
+                    <Link
+                      key={href}
+                      href={href}
+                      className="group flex items-center gap-3 rounded-xl border border-border bg-muted/25 px-3.5 py-3 transition-all duration-200 hover:border-border hover:bg-muted/50"
+                    >
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/60 transition-colors duration-200 group-hover:border-primary/20 group-hover:bg-primary/[0.07]">
+                        <Icon className="h-3.5 w-3.5 text-foreground/30 transition-colors duration-200 group-hover:text-primary/70" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[12.5px] font-medium text-foreground/70 group-hover:text-foreground/90">{label}</p>
+                        <p className="text-[11px] text-foreground/30">{sub}</p>
+                      </div>
+                      <ArrowDiagIcon className="h-3 w-3 shrink-0 text-foreground/15 transition-all duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-foreground/35" />
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </SlideUp>
+          </div>
         </div>
-
-        {/* Empty state — ready for real activity feed */}
-        <div className="flex flex-col items-center justify-center py-8 text-center">
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.07] bg-white/[0.03]">
-            <ClockIcon className="h-5 w-5 text-white/15" />
-          </div>
-          <p className="text-sm text-white/30">No activity yet</p>
-          <p className="mt-1 max-w-xs text-xs leading-relaxed text-white/18">
-            Your study sessions, agent tasks, and memory additions will appear here.
-          </p>
-        </div>
       </div>
-
     </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Icons
-// ---------------------------------------------------------------------------
+// ── Icons ─────────────────────────────────────────────────────────────────
 
 function StudyIcon({ className }: { className?: string }) {
   return (
@@ -260,10 +319,18 @@ function MemoryIcon({ className }: { className?: string }) {
   )
 }
 
-function ArrowIcon({ className }: { className?: string }) {
+function ArrowDiagIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" />
+    </svg>
+  )
+}
+
+function TargetIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
     </svg>
   )
 }
@@ -284,10 +351,10 @@ function ClockIcon({ className }: { className?: string }) {
   )
 }
 
-function TargetIcon({ className }: { className?: string }) {
+function BoltIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" />
     </svg>
   )
 }

@@ -3,9 +3,10 @@
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/Button'
+import { motion } from 'motion/react'
 
 const ACCEPTED = '.pdf,.doc,.docx,.txt,.ppt,.pptx'
-const ACCEPTED_LABEL = 'PDF, Word, PowerPoint, or plain text'
+const ACCEPTED_LABEL = 'PDF, Word, PowerPoint or plain text'
 
 interface Props {
   onUploadSuccess?: () => void
@@ -25,13 +26,11 @@ export function StudyUploadForm({ onUploadSuccess }: Props) {
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragging(false)
-    const dropped = e.dataTransfer.files[0] ?? null
-    handleFile(dropped)
+    handleFile(e.dataTransfer.files[0] ?? null)
   }
 
-  async function handleUpload(e: React.FormEvent) {
+  async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-
     if (!file) {
       setStatus({ type: 'error', message: 'Please choose a file first.' })
       return
@@ -83,14 +82,24 @@ export function StudyUploadForm({ onUploadSuccess }: Props) {
   return (
     <form onSubmit={handleUpload} className="flex flex-col gap-4">
       {/* Drop zone */}
-      <label
-        className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-12 text-center transition-colors ${
+      <motion.div
+        animate={
           dragging
-            ? 'border-violet-500/50 bg-violet-500/5'
+            ? { scale: 1.012, boxShadow: '0 0 52px -10px rgba(190, 28, 28, 0.32)' }
+            : { scale: 1,     boxShadow: '0 0 0px 0px rgba(190, 28, 28, 0)' }
+        }
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        className="rounded-2xl"
+      >
+      <label
+        className={[
+          'relative flex cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-8 py-14 text-center transition-colors duration-250',
+          dragging
+            ? 'border-primary/55 bg-primary/[0.05]'
             : file
-            ? 'border-white/20 bg-white/5'
-            : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
-        }`}
+              ? 'border-emerald-500/30 bg-emerald-500/[0.03]'
+              : 'border-border bg-card/80 hover:border-foreground/20 hover:bg-card',
+        ].join(' ')}
         onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
@@ -104,46 +113,54 @@ export function StudyUploadForm({ onUploadSuccess }: Props) {
 
         {file ? (
           <>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/10">
-              <FileIcon className="h-5 w-5 text-violet-400" />
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08]">
+              <FileIcon className="h-5 w-5 text-emerald-400" />
             </div>
             <div>
-              <p className="text-sm font-medium text-white">{file.name}</p>
-              <p className="mt-0.5 text-xs text-white/35">
+              <p className="text-sm font-medium text-foreground/80">{file.name}</p>
+              <p className="mt-0.5 text-xs text-foreground/30">
                 {(file.size / 1024 / 1024).toFixed(2)} MB · Click to change
               </p>
             </div>
           </>
         ) : (
           <>
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5">
-              <UploadIcon className="h-5 w-5 text-white/30" />
+            <div className={[
+              'flex h-11 w-11 items-center justify-center rounded-xl border transition-all duration-300',
+              dragging
+                ? 'border-primary/40 bg-primary/[0.12]'
+                : 'border-border bg-muted/50',
+            ].join(' ')}>
+              <UploadIcon className={`h-5 w-5 transition-colors duration-300 ${dragging ? 'text-primary' : 'text-foreground/25'}`} />
             </div>
             <div>
-              <p className="text-sm font-medium text-white/60">
-                Drop a file or <span className="text-white/80">click to browse</span>
+              <p className="text-sm font-medium text-foreground/50">
+                Drop a file or{' '}
+                <span className="text-foreground/75">click to browse</span>
               </p>
-              <p className="mt-0.5 text-xs text-white/25">{ACCEPTED_LABEL}</p>
+              <p className="mt-0.5 text-xs text-foreground/22">{ACCEPTED_LABEL}</p>
             </div>
           </>
         )}
       </label>
+      </motion.div>
 
-      {/* Status */}
-      {status ? (
-        <p
-          className={`rounded-lg border px-3.5 py-2.5 text-xs ${
+      {/* Status message */}
+      {status && (
+        <div
+          className={[
+            'rounded-xl border px-4 py-3 text-xs leading-relaxed',
             status.type === 'success'
-              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
-              : 'border-red-500/20 bg-red-500/10 text-red-400'
-          }`}
+              ? 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400'
+              : 'border-red-500/20 bg-red-500/[0.07] text-red-400',
+          ].join(' ')}
         >
           {status.message}
-        </p>
-      ) : null}
+        </div>
+      )}
 
-      <div className="flex items-center justify-end">
-        <Button type="submit" loading={loading} disabled={!file}>
+      <div className="flex justify-end">
+        <Button type="submit" loading={loading} disabled={!file} size="md">
           Upload document
         </Button>
       </div>

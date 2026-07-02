@@ -46,10 +46,10 @@ export function DocumentPreview({ fileType, signedUrl, title }: Props) {
   return (
     <div className="flex flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3">
         <div className="flex items-center gap-2">
-          <FileIcon className="h-4 w-4 text-white/30" />
-          <span className="text-sm font-medium text-white/70">Document Preview</span>
+          <FileIcon className="h-4 w-4 text-foreground/30" />
+          <span className="text-sm font-medium text-foreground/70">Document Preview</span>
           {viewer !== 'unsupported' && (
             <span className="ml-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
               Live
@@ -61,7 +61,7 @@ export function DocumentPreview({ fileType, signedUrl, title }: Props) {
             href={signedUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs text-white/40 transition-colors hover:border-white/[0.12] hover:text-white/65"
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 text-xs text-foreground/40 transition-colors hover:border-border hover:text-foreground/65"
           >
             <ExternalLinkIcon className="h-3.5 w-3.5" />
             Open
@@ -110,7 +110,7 @@ function TxtViewer({ url }: { url: string }) {
 
   return (
     <div className="overflow-x-auto px-8 py-6">
-      <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-white/65">
+      <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground/65">
         {text}
       </pre>
     </div>
@@ -123,14 +123,14 @@ function UnsupportedView({ fileType }: { fileType: string }) {
   const ext = fileType.split('/')[1]?.toUpperCase() || 'this file type'
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.03]">
-        <BlockIcon className="h-6 w-6 text-white/20" />
+      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-muted/40">
+        <BlockIcon className="h-6 w-6 text-foreground/20" />
       </div>
-      <p className="text-sm font-medium text-white/40">Preview not available</p>
-      <p className="mt-1 text-xs text-white/20">
+      <p className="text-sm font-medium text-foreground/40">Preview not available</p>
+      <p className="mt-1 text-xs text-foreground/20">
         In-browser preview is not supported for {ext} files.
       </p>
-      <p className="mt-3 text-xs text-white/15">
+      <p className="mt-3 text-xs text-foreground/15">
         Use the Download or Open buttons above to view this file.
       </p>
     </div>
@@ -165,7 +165,7 @@ function DownloadButton({ url, filename }: { url: string; filename: string }) {
     <button
       onClick={handleDownload}
       disabled={downloading}
-      className="flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs text-white/40 transition-colors hover:border-white/[0.12] hover:text-white/65 disabled:opacity-50"
+      className="flex h-7 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 text-xs text-foreground/40 transition-colors hover:border-border hover:text-foreground/65 disabled:opacity-50"
     >
       {downloading ? (
         <span className="h-3.5 w-3.5 animate-spin rounded-full border border-current border-t-transparent" />

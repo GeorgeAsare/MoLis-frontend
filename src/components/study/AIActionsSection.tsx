@@ -23,7 +23,7 @@ export function AIActionsSection({ hasExtractedText, hasNotes, hasQuiz }: Props)
 
   return (
     <section>
-      <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-white/20">
+      <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
         AI Actions
       </p>
 
@@ -37,8 +37,8 @@ export function AIActionsSection({ hasExtractedText, hasNotes, hasQuiz }: Props)
             hasNotes
               ? 'border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-400/80 hover:bg-emerald-500/[0.09]'
               : !hasExtractedText
-                ? 'cursor-not-allowed border-white/[0.08] bg-white/[0.03] text-white/30 opacity-50'
-                : 'border-violet-500/20 bg-violet-500/[0.08] text-violet-300 hover:border-violet-500/30 hover:bg-violet-500/[0.12]',
+                ? 'cursor-not-allowed border-border bg-muted/40 text-foreground/30 opacity-50'
+                : 'border-primary/20 bg-primary/[0.08] text-primary hover:border-primary/30 hover:bg-primary/[0.12]',
           ].join(' ')}
         >
           <SparklesIcon className="h-4 w-4 shrink-0" />
@@ -54,8 +54,8 @@ export function AIActionsSection({ hasExtractedText, hasNotes, hasQuiz }: Props)
             hasQuiz
               ? 'border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-400/80 hover:bg-emerald-500/[0.09]'
               : !hasExtractedText
-                ? 'cursor-not-allowed border-white/[0.08] bg-white/[0.03] text-white/30 opacity-50'
-                : 'border-violet-500/20 bg-violet-500/[0.08] text-violet-300 hover:border-violet-500/30 hover:bg-violet-500/[0.12]',
+                ? 'cursor-not-allowed border-border bg-muted/40 text-foreground/30 opacity-50'
+                : 'border-primary/20 bg-primary/[0.08] text-primary hover:border-primary/30 hover:bg-primary/[0.12]',
           ].join(' ')}
         >
           <QuizIcon className="h-4 w-4 shrink-0" />
@@ -64,7 +64,7 @@ export function AIActionsSection({ hasExtractedText, hasNotes, hasQuiz }: Props)
       </div>
 
       {!hasExtractedText && (
-        <p className="mt-2.5 text-center text-[11px] text-white/15">
+        <p className="mt-2.5 text-center text-[11px] text-foreground/15">
           Extract text first to enable AI
         </p>
       )}

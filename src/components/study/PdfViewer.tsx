@@ -49,7 +49,7 @@ export function PdfViewer({ url }: Props) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <p className="text-sm text-red-400/70">Failed to load PDF.</p>
-        <p className="mt-1 text-xs text-white/20">The file may be corrupted or inaccessible.</p>
+        <p className="mt-1 text-xs text-foreground/20">The file may be corrupted or inaccessible.</p>
       </div>
     )
   }
@@ -86,17 +86,17 @@ export function PdfViewer({ url }: Props) {
           <button
             onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
             disabled={pageNumber <= 1}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-white/40 transition-colors hover:bg-white/[0.08] hover:text-white/70 disabled:pointer-events-none disabled:opacity-25"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/40 text-foreground/40 transition-colors hover:bg-foreground/[0.08] hover:text-foreground/70 disabled:pointer-events-none disabled:opacity-25"
           >
             <ChevronLeftIcon className="h-4 w-4" />
           </button>
-          <span className="min-w-[80px] text-center text-xs text-white/40">
+          <span className="min-w-[80px] text-center text-xs text-foreground/40">
             Page {pageNumber} of {numPages}
           </span>
           <button
             onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
             disabled={pageNumber >= numPages}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-white/40 transition-colors hover:bg-white/[0.08] hover:text-white/70 disabled:pointer-events-none disabled:opacity-25"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/40 text-foreground/40 transition-colors hover:bg-foreground/[0.08] hover:text-foreground/70 disabled:pointer-events-none disabled:opacity-25"
           >
             <ChevronRightIcon className="h-4 w-4" />
           </button>
@@ -104,10 +104,10 @@ export function PdfViewer({ url }: Props) {
       )}
 
       {numPages === 1 && (
-        <p className="text-xs text-white/20">{numPages} page</p>
+        <p className="text-xs text-foreground/20">{numPages} page</p>
       )}
       {numPages && numPages > 1 && (
-        <p className="text-xs text-white/20">{numPages} pages total</p>
+        <p className="text-xs text-foreground/20">{numPages} pages total</p>
       )}
     </div>
   )

@@ -1,63 +1,428 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ── MoLis Intelligence Design System v1 ────────────────────────────────────
+   70 / 30 / 10 colour rule: black (70) · white (30) · Target Red (10)
+   Light · Dark · Auto
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@layer base {
+
+  /* ── Light mode tokens (default) ──────────────────────────────────────── */
+
+  :root {
+    --background:             0 0% 98%;
+    --foreground:             0 0% 6%;
+
+    --card:                   0 0% 100%;
+    --card-foreground:        0 0% 6%;
+
+    --popover:                0 0% 100%;
+    --popover-foreground:     0 0% 6%;
+
+    --primary:                0 82% 44%;
+    --primary-foreground:     0 0% 98%;
+
+    --secondary:              0 0% 94%;
+    --secondary-foreground:   0 0% 20%;
+
+    --muted:                  0 0% 95%;
+    --muted-foreground:       0 0% 42%;
+
+    --accent:                 0 82% 44%;
+    --accent-foreground:      0 0% 98%;
+
+    --destructive:            0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border:                 0 0% 89%;
+    --input:                  0 0% 89%;
+    --ring:                   0 82% 44%;
+
+    --radius: 0.625rem;
+
+    /* ── MoLis radius scale ──────────────────────────────────────────────── */
+    --ml-radius-xs:  4px;
+    --ml-radius-sm:  6px;
+    --ml-radius-md:  10px;
+    --ml-radius-lg:  14px;
+    --ml-radius-xl:  20px;
+    --ml-radius-2xl: 28px;
+
+    /* ── MoLis motion tokens ─────────────────────────────────────────────── */
+    --ml-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+    --ml-ease-snap:   cubic-bezier(0.19, 1, 0.22, 1);
+    --ml-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ml-ease-out:    cubic-bezier(0.0, 0.0, 0.2, 1);
+    --ml-ease-in:     cubic-bezier(0.4, 0.0, 1, 1);
+
+    --ml-dur-instant: 80ms;
+    --ml-dur-fast:    150ms;
+    --ml-dur-normal:  250ms;
+    --ml-dur-slow:    380ms;
+    --ml-dur-slower:  550ms;
+  }
+
+  /* ── Dark mode (system auto) ──────────────────────────────────────────── */
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background:             0 4% 8%;
+      --foreground:             0 0% 97%;
+
+      --card:                   0 3% 12%;
+      --card-foreground:        0 0% 97%;
+
+      --popover:                0 3% 13%;
+      --popover-foreground:     0 0% 97%;
+
+      --primary:                0 80% 50%;
+      --primary-foreground:     0 0% 98%;
+
+      --secondary:              0 2% 14%;
+      --secondary-foreground:   0 0% 72%;
+
+      --muted:                  0 2% 14%;
+      --muted-foreground:       0 0% 50%;
+
+      --accent:                 0 80% 50%;
+      --accent-foreground:      0 0% 98%;
+
+      --destructive:            0 62.8% 30.6%;
+      --destructive-foreground: 0 0% 98%;
+
+      --border:                 0 0% 18%;
+      --input:                  0 0% 17%;
+      --ring:                   0 80% 50%;
+    }
+  }
+
+  /* ── Dark mode (forced via .dark class) ───────────────────────────────── */
+
+  .dark {
+    --background:             0 4% 8%;
+    --foreground:             0 0% 97%;
+
+    --card:                   0 3% 12%;
+    --card-foreground:        0 0% 97%;
+
+    --popover:                0 3% 13%;
+    --popover-foreground:     0 0% 97%;
+
+    --primary:                0 80% 50%;
+    --primary-foreground:     0 0% 98%;
+
+    --secondary:              0 2% 14%;
+    --secondary-foreground:   0 0% 72%;
+
+    --muted:                  0 2% 14%;
+    --muted-foreground:       0 0% 50%;
+
+    --accent:                 0 80% 50%;
+    --accent-foreground:      0 0% 98%;
+
+    --destructive:            0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border:                 0 0% 18%;
+    --input:                  0 0% 17%;
+    --ring:                   0 80% 50%;
+  }
+
+  /* ── Light mode (forced via .light class) ─────────────────────────────── */
+
+  .light {
+    --background:             0 0% 98%;
+    --foreground:             0 0% 6%;
+
+    --card:                   0 0% 100%;
+    --card-foreground:        0 0% 6%;
+
+    --popover:                0 0% 100%;
+    --popover-foreground:     0 0% 6%;
+
+    --primary:                0 82% 44%;
+    --primary-foreground:     0 0% 98%;
+
+    --secondary:              0 0% 94%;
+    --secondary-foreground:   0 0% 20%;
+
+    --muted:                  0 0% 95%;
+    --muted-foreground:       0 0% 42%;
+
+    --accent:                 0 82% 44%;
+    --accent-foreground:      0 0% 98%;
+
+    --destructive:            0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border:                 0 0% 89%;
+    --input:                  0 0% 89%;
+    --ring:                   0 82% 44%;
+  }
+
+  /* ── Base resets ──────────────────────────────────────────────────────── */
+
+  *,
+  ::after,
+  ::before {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans, system-ui, sans-serif);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: rgba(190, 28, 28, 0.22);
+    color: hsl(var(--foreground));
+  }
 }
 
+/* ── Tailwind v4 design tokens ───────────────────────────────────────────── */
 
-:root {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+@theme inline {
+  --color-background:             hsl(var(--background));
+  --color-foreground:             hsl(var(--foreground));
+  --color-card:                   hsl(var(--card));
+  --color-card-foreground:        hsl(var(--card-foreground));
+  --color-popover:                hsl(var(--popover));
+  --color-popover-foreground:     hsl(var(--popover-foreground));
+  --color-primary:                hsl(var(--primary));
+  --color-primary-foreground:     hsl(var(--primary-foreground));
+  --color-secondary:              hsl(var(--secondary));
+  --color-secondary-foreground:   hsl(var(--secondary-foreground));
+  --color-muted:                  hsl(var(--muted));
+  --color-muted-foreground:       hsl(var(--muted-foreground));
+  --color-accent:                 hsl(var(--accent));
+  --color-accent-foreground:      hsl(var(--accent-foreground));
+  --color-destructive:            hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border:                 hsl(var(--border));
+  --color-input:                  hsl(var(--input));
+  --color-ring:                   hsl(var(--ring));
+
+  --radius-sm:  calc(var(--radius) - 4px);
+  --radius-md:  calc(var(--radius) - 2px);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 10px);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+/* ── Keyframes ────────────────────────────────────────────────────────────── */
 
 @keyframes pulse-slow {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+  50%       { opacity: 0.25; }
 }
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%       { opacity: 0.9; transform: scale(1.04); }
+}
+
+@keyframes orb-float {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50%       { transform: translateY(-12px) scale(1.02); }
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes orbit-cw {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes orbit-ccw {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(-360deg); }
+}
+
+@keyframes pulse-outward {
+  0%   { transform: scale(1);   opacity: 0.6; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* ── Utility classes ─────────────────────────────────────────────────────── */
 
 @layer utilities {
-  .animate-pulse-slow {
-    animation: pulse-slow 3s ease-in-out infinite;
+  /* Animations */
+  .animate-pulse-slow          { animation: pulse-slow 3s ease-in-out infinite; }
+  .animate-glow-pulse          { animation: glow-pulse 2.5s ease-in-out infinite; }
+  .animate-orb-float           { animation: orb-float 8s ease-in-out infinite; }
+  .animate-spin-slow           { animation: spin-slow 14s linear infinite; }
+  .animate-fade-up             { animation: fade-up 0.5s var(--ml-ease-smooth) both; }
+  .animate-orbit-cw-slow       { animation: orbit-cw  22s linear infinite; }
+  .animate-orbit-cw-fast       { animation: orbit-cw  9s  linear infinite; }
+  .animate-orbit-ccw-slow      { animation: orbit-ccw 15s linear infinite; }
+  .animate-pulse-outward       { animation: pulse-outward 2.8s ease-out infinite; }
+  .animate-pulse-outward-delay { animation: pulse-outward 2.8s ease-out 1.4s infinite; }
+
+  /* Shimmer skeleton */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
   }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.04) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.8s ease-in-out infinite;
+  }
+
+  /* Background texture — adapts to mode */
+  .bg-grid-dots {
+    background-image: radial-gradient(circle, rgba(128, 128, 128, 0.10) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .bg-grid-dots {
+      background-image: radial-gradient(circle, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+    }
+  }
+  .dark .bg-grid-dots {
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  }
+
+  /* Text gradients */
+  .text-gradient-red {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(0 75% 65%) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Neutral white-to-dimmed gradient — premium heading style */
+  .text-gradient-white {
+    background: linear-gradient(160deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.55) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-subtle {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.45) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Glass surface */
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  /* Premium translucent card — backdrop blur + micro-border + elevation */
+  .card-premium {
+    background: rgba(255, 255, 255, 0.035);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.28),
+      0 0 0 1px rgba(255, 255, 255, 0.025) inset;
+  }
+  .card-premium:hover {
+    border-color: rgba(255, 255, 255, 0.11);
+    box-shadow:
+      0 4px 20px rgba(0, 0, 0, 0.32),
+      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  }
+
+  /* Ambient red radial — for top-of-page hero glow, used sparingly */
+  .glow-ambient-red {
+    background: radial-gradient(ellipse 65% 45% at 50% 0%, rgba(190, 28, 28, 0.11) 0%, transparent 70%);
+  }
+
+  /* ── Glow: Target Red (primary brand) ──────────────────────────────────── */
+  .glow-red-sm { box-shadow: 0 0 16px -4px  rgba(190, 28, 28, 0.32); }
+  .glow-red-md { box-shadow: 0 0 32px -8px  rgba(190, 28, 28, 0.38); }
+  .glow-red-lg { box-shadow: 0 0 64px -12px rgba(190, 28, 28, 0.44); }
+
+  /* ── Glow: neutral surface depth ───────────────────────────────────────── */
+  .glow-neutral    { box-shadow: 0 0 24px -6px rgba(255, 255, 255, 0.07); }
+  .glow-neutral-sm { box-shadow: 0 0 12px -4px rgba(0, 0, 0, 0.30); }
+
+  /* ── Elevation shadows (card depth) ────────────────────────────────────── */
+  .shadow-card {
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.30),
+      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  }
+  .shadow-card-hover {
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.38),
+      0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  }
+
+  /* ── Glow: emerald status ───────────────────────────────────────────────── */
+  .glow-emerald { box-shadow: 0 0 8px rgba(52, 211, 153, 0.6); }
+
+  /* Scrollbar hide */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
 }
 
-/* DOCX viewer prose styles — dark theme */
+/* ── DOCX viewer prose ───────────────────────────────────────────────────── */
+
 .docx-content h1 { font-size: 1.5rem; font-weight: 600; margin: 1.5rem 0 0.75rem; color: rgba(255,255,255,0.90); }
 .docx-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: rgba(255,255,255,0.85); }
 .docx-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: rgba(255,255,255,0.80); }
-.docx-content h4, .docx-content h5, .docx-content h6 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.35rem; color: rgba(255,255,255,0.75); }
+.docx-content h4,
+.docx-content h5,
+.docx-content h6 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.35rem; color: rgba(255,255,255,0.75); }
 .docx-content p { margin: 0.5rem 0; line-height: 1.7; }
-.docx-content ul, .docx-content ol { margin: 0.5rem 0 0.5rem 1.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.docx-content ul,
+.docx-content ol { margin: 0.5rem 0 0.5rem 1.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
 .docx-content ul { list-style-type: disc; }
 .docx-content ol { list-style-type: decimal; }
 .docx-content li { line-height: 1.65; }
-.docx-content strong, .docx-content b { font-weight: 600; color: rgba(255,255,255,0.88); }
-.docx-content em, .docx-content i { font-style: italic; }
+.docx-content strong,
+.docx-content b { font-weight: 600; color: rgba(255,255,255,0.88); }
+.docx-content em,
+.docx-content i { font-style: italic; }
 .docx-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.875rem; }
 .docx-content th { border: 1px solid rgba(255,255,255,0.1); padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.04); text-align: left; font-weight: 600; color: rgba(255,255,255,0.70); }
 .docx-content td { border: 1px solid rgba(255,255,255,0.07); padding: 0.5rem 0.75rem; }
-.docx-content blockquote { border-left: 3px solid rgba(139,92,246,0.4); padding-left: 1rem; margin: 0.75rem 0; color: rgba(255,255,255,0.50); font-style: italic; }
-.docx-content pre, .docx-content code { font-family: monospace; font-size: 0.85em; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.1em 0.35em; }
+.docx-content blockquote { border-left: 3px solid rgba(190,28,28,0.35); padding-left: 1rem; margin: 0.75rem 0; color: rgba(255,255,255,0.50); font-style: italic; }
+.docx-content pre,
+.docx-content code { font-family: monospace; font-size: 0.85em; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.1em 0.35em; }
 .docx-content pre { padding: 0.75rem 1rem; overflow-x: auto; }
 .docx-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 1.25rem 0; }
-.docx-content a { color: rgba(167,139,250,0.85); text-decoration: underline; text-underline-offset: 2px; }
+.docx-content a { color: rgba(220, 80, 80, 0.85); text-decoration: underline; text-underline-offset: 2px; }
 
-/* react-pdf dark theme overrides */
-.react-pdf__Page__canvas { border-radius: 8px; }
+/* ── react-pdf overrides ─────────────────────────────────────────────────── */
+
+.react-pdf__Page__canvas      { border-radius: 8px; }
 .react-pdf__Page__textContent { color: transparent; }

@@ -59,8 +59,8 @@ export function DocumentList({
   }
 
   return (
-    <div className="border-t border-white/[0.06] pt-6">
-      <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.1em] text-white/20">
+    <div className="border-t border-border pt-6">
+      <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
         Your documents
       </p>
 
@@ -70,7 +70,7 @@ export function DocumentList({
           {[0, 1, 2].map((i) => (
             <div
               key={i}
-              className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3"
+              className="flex items-center gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3"
             >
               <Skeleton className="h-8 w-8 shrink-0 rounded-lg" />
               <div className="flex flex-1 flex-col gap-1.5">
@@ -89,7 +89,7 @@ export function DocumentList({
           <p className="text-sm text-red-400/70">{error}</p>
           <button
             onClick={onRetry}
-            className="mt-3 text-xs text-white/30 underline underline-offset-2 hover:text-white/50 transition-colors"
+            className="mt-3 text-xs text-foreground/30 underline underline-offset-2 hover:text-foreground/50 transition-colors"
           >
             Try again
           </button>
@@ -98,10 +98,10 @@ export function DocumentList({
 
       {/* Empty state */}
       {!loading && !error && documents.length === 0 && (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] py-10 text-center">
-          <DocumentsIcon className="mb-3 h-8 w-8 text-white/10" />
-          <p className="text-sm text-white/30">No documents uploaded yet</p>
-          <p className="mt-1 text-xs text-white/20">Uploaded files will appear here</p>
+        <div className="flex flex-col items-center justify-center rounded-xl border border-border bg-muted/30 py-10 text-center">
+          <DocumentsIcon className="mb-3 h-8 w-8 text-foreground/10" />
+          <p className="text-sm text-foreground/30">No documents uploaded yet</p>
+          <p className="mt-1 text-xs text-foreground/20">Uploaded files will appear here</p>
         </div>
       )}
 
@@ -112,17 +112,17 @@ export function DocumentList({
             <Link
               key={doc.id}
               href={`/dashboard/study/${doc.id}`}
-              className="group flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-4 py-3 transition-colors hover:border-violet-500/20 hover:bg-white/[0.04]"
+              className="group flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 transition-colors hover:border-primary/20 hover:bg-muted/50"
             >
               {/* File icon */}
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-violet-500/20 bg-violet-500/10">
-                <FileIcon className="h-4 w-4 text-violet-400" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+                <FileIcon className="h-4 w-4 text-primary" />
               </div>
 
               {/* Title + meta */}
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <p className="truncate text-sm font-medium text-white/80">{doc.title}</p>
-                <p className="text-xs text-white/30">
+                <p className="truncate text-sm font-medium text-foreground/80">{doc.title}</p>
+                <p className="text-xs text-foreground/30">
                   {fileTypeLabel(doc.file_type)} · {formatDate(doc.created_at)}
                 </p>
               </div>
@@ -137,7 +137,7 @@ export function DocumentList({
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(doc) }}
                 disabled={deletingId !== null}
                 aria-label={`Delete ${doc.title}`}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white/15 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:pointer-events-none disabled:opacity-40"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground/15 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:pointer-events-none disabled:opacity-40"
               >
                 {deletingId === doc.id ? (
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border border-current border-t-transparent" />

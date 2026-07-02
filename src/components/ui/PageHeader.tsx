@@ -2,18 +2,24 @@ interface PageHeaderProps {
   title: string
   description?: string
   action?: React.ReactNode
+  label?: string
 }
 
-export function PageHeader({ title, description, action }: PageHeaderProps) {
+export function PageHeader({ title, description, action, label }: PageHeaderProps) {
   return (
-    <div className="flex items-start justify-between border-b border-white/5 pb-6 mb-8">
+    <div className="mb-8 flex items-start justify-between">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">{title}</h1>
-        {description ? (
-          <p className="mt-1 text-sm text-white/40">{description}</p>
-        ) : null}
+        {label && (
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-white/20">
+            {label}
+          </p>
+        )}
+        <h1 className="text-xl font-semibold tracking-[-0.02em] text-white">{title}</h1>
+        {description && (
+          <p className="mt-1.5 text-sm leading-relaxed text-white/35">{description}</p>
+        )}
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
+      {action && <div className="shrink-0">{action}</div>}
     </div>
   )
 }

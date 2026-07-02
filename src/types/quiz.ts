@@ -4,6 +4,8 @@ export interface MultipleChoiceQuestion {
   options: string[]
   correct_index: number
   explanation: string
+  concept_id?: string
+  concept_title?: string
 }
 
 export interface TrueFalseQuestion {
@@ -11,6 +13,8 @@ export interface TrueFalseQuestion {
   question: string
   correct: boolean
   explanation: string
+  concept_id?: string
+  concept_title?: string
 }
 
 export interface ShortAnswerQuestion {
@@ -19,6 +23,8 @@ export interface ShortAnswerQuestion {
   model_answer: string
   key_points: string[]
   explanation: string
+  concept_id?: string
+  concept_title?: string
 }
 
 export interface ScenarioQuestion {
@@ -27,6 +33,8 @@ export interface ScenarioQuestion {
   options: string[]
   correct_index: number
   explanation: string
+  concept_id?: string
+  concept_title?: string
 }
 
 export type QuizQuestion =

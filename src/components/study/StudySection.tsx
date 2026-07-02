@@ -29,6 +29,7 @@ export function StudySection({ userId }: Props) {
   }, [userId])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadDocuments()
   }, [loadDocuments])
 
