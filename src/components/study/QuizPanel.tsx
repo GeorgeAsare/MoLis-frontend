@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { generateQuiz } from '@/app/actions/quiz'
-import { saveWeakTopics } from '@/app/actions/weakTopics'
+import { recordConceptResult } from '@/app/actions/conceptMastery'
+import { startQuizAttempt, saveQuizAttempt } from '@/app/actions/quizAttempt'
 import { Skeleton } from '@/components/ui/Skeleton'
-import type { MissedQuestionData } from '@/types/weakTopic'
 import type {
   Quiz,
   QuizQuestion,
@@ -13,14 +13,10 @@ import type {
   ShortAnswerQuestion,
   ScenarioQuestion,
 } from '@/types/quiz'
+import type { DocumentAnalysis } from '@/types/documentAnalysis'
+import type { AnswerState, QuizAttempt } from '@/types/quizAttempt'
 
-// ── Local types ───────────────────────────────────────────────────────────────
-
-interface AnswerState {
-  selected: number | boolean | null
-  revealed: boolean
-  selfCorrect: boolean | null // only used for short_answer
-}
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Phase = 'idle' | 'generating' | 'ready' | 'playing' | 'review' | 'error'
 
@@ -28,6 +24,8 @@ interface Props {
   documentId: string
   hasExtractedText: boolean
   initialQuiz: Quiz | null
+  initialAttempt?: QuizAttempt | null
+  analysis?: DocumentAnalysis | null
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -80,49 +78,14 @@ function canAdvance(question: QuizQuestion, answer: AnswerState): boolean {
   return true
 }
 
-function buildMissedData(
-  questions: QuizQuestion[],
-  answers: AnswerState[],
-): MissedQuestionData[] {
-  return questions.flatMap((q, i) => {
-    const a = answers[i]
-    if (!a || gradeAnswer(q, a) !== false) return []
-
-    let selectedAnswer: string
-    let correctAnswer: string
-
-    if (q.type === 'multiple_choice' || q.type === 'scenario') {
-      selectedAnswer =
-        typeof a.selected === 'number'
-          ? (q.options[a.selected] ?? 'Unknown')
-          : 'Not answered'
-      correctAnswer = q.options[q.correct_index] ?? 'Unknown'
-    } else if (q.type === 'true_false') {
-      selectedAnswer =
-        typeof a.selected === 'boolean' ? (a.selected ? 'True' : 'False') : 'Not answered'
-      correctAnswer = q.correct ? 'True' : 'False'
-    } else {
-      selectedAnswer = 'Self-assessed as incorrect'
-      correctAnswer =
-        q.model_answer.length > 150 ? q.model_answer.slice(0, 150) + '…' : q.model_answer
-    }
-
-    return [
-      {
-        question: q.question,
-        questionType: q.type,
-        selectedAnswer,
-        correctAnswer,
-        explanation: q.explanation,
-      },
-    ]
-  })
+function attemptMatchesQuiz(attempt: QuizAttempt | null | undefined, quiz: Quiz | null): boolean {
+  return !!(attempt && quiz && attempt.quiz_id === quiz.id)
 }
 
 function typeStyle(type: QuizQuestion['type']): string {
   switch (type) {
     case 'multiple_choice':
-      return 'text-violet-400 border-violet-500/20 bg-violet-500/10'
+      return 'text-primary border-primary/20 bg-primary/10'
     case 'true_false':
       return 'text-sky-400 border-sky-500/20 bg-sky-500/10'
     case 'short_answer':
@@ -147,11 +110,30 @@ function typeLabel(type: QuizQuestion['type']): string {
 
 // ── QuizPanel ─────────────────────────────────────────────────────────────────
 
-export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) {
-  const [phase, setPhase] = useState<Phase>(initialQuiz ? 'ready' : 'idle')
+export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAttempt }: Props) {
+  const [phase, setPhase] = useState<Phase>(() => {
+    if (!initialQuiz) return 'idle'
+    if (attemptMatchesQuiz(initialAttempt, initialQuiz)) {
+      return initialAttempt!.phase as Phase
+    }
+    return 'ready'
+  })
   const [quiz, setQuiz] = useState<Quiz | null>(initialQuiz)
-  const [answers, setAnswers] = useState<AnswerState[]>([])
-  const [currentIndex, setCurrentIndex] = useState(0)
+  const [answers, setAnswers] = useState<AnswerState[]>(() => {
+    if (attemptMatchesQuiz(initialAttempt, initialQuiz)) {
+      return initialAttempt!.answers as AnswerState[]
+    }
+    return []
+  })
+  const [currentIndex, setCurrentIndex] = useState<number>(() => {
+    if (attemptMatchesQuiz(initialAttempt, initialQuiz)) {
+      return initialAttempt!.current_index
+    }
+    return 0
+  })
+  const [attemptId, setAttemptId] = useState<string | null>(
+    () => attemptMatchesQuiz(initialAttempt, initialQuiz) ? initialAttempt!.id : null,
+  )
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [msgIndex, setMsgIndex] = useState(0)
   const [weakTopicsSaved, setWeakTopicsSaved] = useState<boolean | null>(null)
@@ -183,6 +165,9 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
     setErrorMessage(null)
     setMsgIndex(0)
     setAnswers([])
+    setCurrentIndex(0)
+    setAttemptId(null)
+    setWeakTopicsSaved(null)
     try {
       const result = await generateQuiz(documentId)
       setQuiz(result)
@@ -198,6 +183,9 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
     setAnswers(makeAnswers(quiz.questions.length))
     setCurrentIndex(0)
     setPhase('playing')
+    startQuizAttempt(documentId, quiz.id, quiz.questions.length)
+      .then(attempt => setAttemptId(attempt.id))
+      .catch(() => {})
   }
 
   function handleSelect(value: number | boolean) {
@@ -225,12 +213,43 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
   function handleAdvance() {
     if (!quiz) return
     if (currentIndex < quiz.questions.length - 1) {
-      setCurrentIndex((i) => i + 1)
+      const newIndex = currentIndex + 1
+      setCurrentIndex(newIndex)
+      if (attemptId) {
+        saveQuizAttempt(attemptId, {
+          answers,
+          current_index: newIndex,
+          phase: 'playing',
+        }).catch(() => {})
+      }
     } else {
       setPhase('review')
-      const missed = buildMissedData(quiz.questions, answers)
-      if (missed.length > 0) {
-        saveWeakTopics(documentId, missed)
+      const { correct, total } = computeScore(quiz.questions, answers)
+      if (attemptId) {
+        saveQuizAttempt(attemptId, {
+          answers,
+          current_index: currentIndex,
+          phase: 'review',
+          score_correct: correct,
+          score_total: total,
+          completed_at: new Date().toISOString(),
+        }).catch(() => {})
+      }
+      const toRecord = quiz.questions
+        .map((q, i) => ({ q, a: answers[i] }))
+        .filter(({ q, a }) => q.concept_id && a?.revealed)
+      if (toRecord.length > 0) {
+        Promise.all(
+          toRecord.map(({ q, a }) =>
+            recordConceptResult(documentId, {
+              concept_id: q.concept_id!,
+              concept_title: q.concept_title ?? q.concept_id!,
+              correct: gradeAnswer(q, a) === true,
+              source: 'quiz',
+              question: q.question,
+            }),
+          ),
+        )
           .then(() => setWeakTopicsSaved(true))
           .catch(() => {})
       }
@@ -241,25 +260,29 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
     if (!quiz) return
     setAnswers(makeAnswers(quiz.questions.length))
     setCurrentIndex(0)
+    setWeakTopicsSaved(null)
     setPhase('playing')
+    startQuizAttempt(documentId, quiz.id, quiz.questions.length)
+      .then(attempt => setAttemptId(attempt.id))
+      .catch(() => {})
   }
 
   return (
     <div
       id="quiz-panel"
-      className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.025]"
+      className="overflow-hidden rounded-xl border border-border bg-card"
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3.5">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
         <div className="flex items-center gap-2">
-          <QuizIcon className="h-4 w-4 text-violet-400/60" />
-          <span className="text-sm font-medium text-white/70">Quiz</span>
+          <QuizIcon className="h-4 w-4 text-primary/60" />
+          <span className="text-sm font-medium text-foreground/70">Quiz</span>
         </div>
         <div className="flex items-center gap-2">
           {(phase === 'ready' || phase === 'playing' || phase === 'review') && quiz && (
             <button
               onClick={triggerGenerate}
-              className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-xs text-white/35 transition-colors hover:border-white/[0.12] hover:text-white/55"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55"
             >
               <RegenerateIcon className="h-3 w-3" />
               Regenerate
@@ -273,7 +296,7 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
       <div className="p-5">
         {phase === 'idle' && (
           <div className="flex flex-col gap-4">
-            <p className="text-sm leading-relaxed text-white/35">
+            <p className="text-sm leading-relaxed text-foreground/35">
               {hasExtractedText
                 ? 'Generate an interactive quiz — multiple choice, true/false, short answer, and scenario questions — to test your understanding of this document.'
                 : 'Text extraction is required before generating a quiz.'}
@@ -281,7 +304,7 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
             <button
               onClick={triggerGenerate}
               disabled={!hasExtractedText}
-              className="inline-flex w-fit items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15] disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <QuizIcon className="h-4 w-4" />
               Generate Quiz
@@ -297,7 +320,7 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz }: Props) 
             </div>
             <button
               onClick={triggerGenerate}
-              className="inline-flex w-fit items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15]"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
             >
               <QuizIcon className="h-4 w-4" />
               Try Again
@@ -350,20 +373,20 @@ function GeneratingSkeleton({ msgIndex }: { msgIndex: number }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-violet-500/20 bg-violet-500/10">
-          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-violet-400/60 border-t-transparent" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
         </div>
         <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium text-white/60">
+          <p className="text-sm font-medium text-foreground/60">
             {GENERATION_MESSAGES[msgIndex]}
           </p>
-          <p className="text-xs text-white/25">Powered by GPT-4o mini</p>
+          <p className="text-xs text-foreground/25">Powered by GPT-4o mini</p>
         </div>
       </div>
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="flex flex-col gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"
+          className="flex flex-col gap-3 rounded-xl border border-border bg-muted/30 p-4"
         >
           <Skeleton className="h-5 w-24 rounded-full" />
           <Skeleton className="h-4 w-full rounded-full" />
@@ -396,10 +419,10 @@ function QuizStartScreen({ quiz, onStart }: { quiz: Quiz; onStart: () => void })
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-base font-semibold leading-snug text-white/85">
+        <h2 className="text-base font-semibold leading-snug text-foreground/85">
           {quiz.title}
         </h2>
-        <p className="mt-1 text-xs text-white/20">
+        <p className="mt-1 text-xs text-foreground/20">
           Generated {generatedAt} · {quiz.model}
         </p>
       </div>
@@ -407,7 +430,7 @@ function QuizStartScreen({ quiz, onStart }: { quiz: Quiz; onStart: () => void })
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {(
           [
-            ['multiple_choice', 'Multiple Choice', 'text-violet-400'],
+            ['multiple_choice', 'Multiple Choice', 'text-primary'],
             ['true_false', 'True / False', 'text-sky-400'],
             ['short_answer', 'Short Answer', 'text-amber-400'],
             ['scenario', 'Scenario', 'text-emerald-400'],
@@ -415,17 +438,17 @@ function QuizStartScreen({ quiz, onStart }: { quiz: Quiz; onStart: () => void })
         ).map(([t, label, color]) => (
           <div
             key={t}
-            className="flex flex-col gap-1 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-center"
+            className="flex flex-col gap-1 rounded-lg border border-border bg-muted/30 p-3 text-center"
           >
             <span className={`text-2xl font-bold ${color}`}>{counts[t] ?? 0}</span>
-            <span className="text-[11px] text-white/30">{label}</span>
+            <span className="text-[11px] text-foreground/30">{label}</span>
           </div>
         ))}
       </div>
 
-      <div className="flex items-start gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-        <InfoIcon className="mt-0.5 h-4 w-4 shrink-0 text-white/20" />
-        <p className="text-xs leading-relaxed text-white/35">
+      <div className="flex items-start gap-2.5 rounded-xl border border-border bg-muted/30 px-4 py-3">
+        <InfoIcon className="mt-0.5 h-4 w-4 shrink-0 text-foreground/20" />
+        <p className="text-xs leading-relaxed text-foreground/35">
           Answer each question before moving on. Short answer questions are
           self-assessed — you&apos;ll see the model answer to compare against.
         </p>
@@ -433,7 +456,7 @@ function QuizStartScreen({ quiz, onStart }: { quiz: Quiz; onStart: () => void })
 
       <button
         onClick={onStart}
-        className="inline-flex w-fit items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-5 py-2.5 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15]"
+        className="inline-flex w-fit items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-5 py-2.5 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
       >
         <PlayIcon className="h-4 w-4" />
         Start Quiz
@@ -476,7 +499,7 @@ function QuizPlayer({
       {/* Progress */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-white/30">
+          <span className="text-xs text-foreground/30">
             Question {currentIndex + 1} of {questions.length}
           </span>
           <span
@@ -485,16 +508,16 @@ function QuizPlayer({
             {typeLabel(question.type)}
           </span>
         </div>
-        <div className="h-1 overflow-hidden rounded-full bg-white/[0.06]">
+        <div className="h-1 overflow-hidden rounded-full bg-foreground/[0.06]">
           <div
-            className="h-full rounded-full bg-violet-500/60 transition-all duration-300"
+            className="h-full rounded-full bg-primary/60 transition-all duration-300"
             style={{ width: `${progress}%` }}
           />
         </div>
       </div>
 
       {/* Question text */}
-      <p className="text-sm font-medium leading-relaxed text-white/80">
+      <p className="text-sm font-medium leading-relaxed text-foreground/80">
         {question.question}
       </p>
 
@@ -529,7 +552,7 @@ function QuizPlayer({
             <button
               onClick={onReveal}
               disabled={answer.selected === null}
-              className="inline-flex w-fit items-center gap-2 rounded-lg border border-white/[0.10] bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/50 transition-colors hover:border-white/[0.16] hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-border bg-muted/50 px-4 py-2 text-sm font-medium text-foreground/50 transition-colors hover:border-border hover:text-foreground/70 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Check Answer
             </button>
@@ -548,7 +571,7 @@ function QuizPlayer({
         <div className="flex justify-end pt-1">
           <button
             onClick={onAdvance}
-            className="inline-flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15]"
+            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
           >
             {isLast ? (
               <>
@@ -590,13 +613,13 @@ function MCOptions({
             ? 'border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-300/90'
             : isSelected
               ? 'border-red-500/25 bg-red-500/[0.07] text-red-400/80'
-              : 'border-white/[0.05] bg-white/[0.01] text-white/20'
+              : 'border-border bg-muted/10 text-foreground/20'
         } else if (isSelected) {
           cls +=
-            'border-violet-500/30 bg-violet-500/[0.10] text-violet-300 cursor-pointer'
+            'border-primary/30 bg-primary/[0.10] text-primary cursor-pointer'
         } else {
           cls +=
-            'border-white/[0.07] bg-white/[0.02] text-white/55 hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer'
+            'border-border bg-muted/30 text-foreground/55 hover:border-border hover:bg-muted/50 cursor-pointer'
         }
 
         return (
@@ -647,12 +670,12 @@ function TFOptions({
             ? 'border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-300/90'
             : isSelected
               ? 'border-red-500/25 bg-red-500/[0.07] text-red-400/80'
-              : 'border-white/[0.05] bg-white/[0.01] text-white/20'
+              : 'border-border bg-muted/10 text-foreground/20'
         } else if (isSelected) {
-          cls += 'border-violet-500/30 bg-violet-500/[0.10] text-violet-300 cursor-pointer'
+          cls += 'border-primary/30 bg-primary/[0.10] text-primary cursor-pointer'
         } else {
           cls +=
-            'border-white/[0.07] bg-white/[0.02] text-white/55 hover:border-white/[0.12] hover:bg-white/[0.04] cursor-pointer'
+            'border-border bg-muted/30 text-foreground/55 hover:border-border hover:bg-muted/50 cursor-pointer'
         }
 
         return (
@@ -691,8 +714,8 @@ function SAReveal({
     <div className="flex flex-col gap-3">
       {!answer.revealed ? (
         <>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-            <p className="text-xs italic text-white/30">
+          <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+            <p className="text-xs italic text-foreground/30">
               Formulate your answer, then reveal the model answer below.
             </p>
           </div>
@@ -710,13 +733,13 @@ function SAReveal({
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-amber-400/60">
               Model Answer
             </p>
-            <p className="text-sm leading-relaxed text-white/65">
+            <p className="text-sm leading-relaxed text-foreground/65">
               {question.model_answer}
             </p>
             {question.key_points.length > 0 && (
               <ul className="mt-3 flex flex-col gap-1.5">
                 {question.key_points.map((point, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-white/45">
+                  <li key={i} className="flex items-start gap-2 text-xs text-foreground/45">
                     <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400/50" />
                     {point}
                   </li>
@@ -727,7 +750,7 @@ function SAReveal({
 
           {answer.selfCorrect === null ? (
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-white/30">How did you do?</p>
+              <p className="text-xs text-foreground/30">How did you do?</p>
               <div className="flex gap-2">
                 <button
                   onClick={() => onSelfGrade(true)}
@@ -762,8 +785,8 @@ function SAReveal({
             </div>
           )}
 
-          <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2.5">
-            <p className="text-xs leading-relaxed text-white/35">{question.explanation}</p>
+          <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+            <p className="text-xs leading-relaxed text-foreground/35">{question.explanation}</p>
           </div>
         </div>
       )}
@@ -803,7 +826,7 @@ function ExplanationCard({
         >
           {isCorrect ? 'Correct!' : 'Incorrect'}
         </p>
-        <p className="text-sm leading-relaxed text-white/55">{explanation}</p>
+        <p className="text-sm leading-relaxed text-foreground/55">{explanation}</p>
       </div>
     </div>
   )
@@ -865,7 +888,7 @@ function QuizReview({
         className={`flex items-center gap-5 rounded-xl border ${accentBorder} ${accentBg} px-5 py-5`}
       >
         <div
-          className={`flex flex-col items-center rounded-xl border ${accentBorder} bg-white/[0.03] px-4 py-3 text-center`}
+          className={`flex flex-col items-center rounded-xl border ${accentBorder} bg-muted/40 px-4 py-3 text-center`}
         >
           <span className={`text-3xl font-bold tabular-nums ${accentColor}`}>
             {correct}/{total}
@@ -874,7 +897,7 @@ function QuizReview({
         </div>
         <div>
           <p className={`text-base font-semibold ${accentColor}`}>{msg}</p>
-          <p className="mt-1 text-xs text-white/35">
+          <p className="mt-1 text-xs text-foreground/35">
             {correct} correct out of {total} questions
           </p>
         </div>
@@ -882,13 +905,13 @@ function QuizReview({
 
       {/* Type breakdown */}
       <div className="flex flex-col gap-2">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white/25">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/25">
           Breakdown
         </p>
         <div className="grid grid-cols-2 gap-2">
           {(
             [
-              ['multiple_choice', 'Multiple Choice', 'text-violet-400'],
+              ['multiple_choice', 'Multiple Choice', 'text-primary'],
               ['true_false', 'True / False', 'text-sky-400'],
               ['short_answer', 'Short Answer', 'text-amber-400'],
               ['scenario', 'Scenario', 'text-emerald-400'],
@@ -899,12 +922,12 @@ function QuizReview({
             return (
               <div
                 key={t}
-                className="flex flex-col gap-0.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
+                className="flex flex-col gap-0.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5"
               >
                 <span className={`text-sm font-semibold ${color}`}>
                   {stats.correct}/{stats.total}
                 </span>
-                <span className="text-[11px] text-white/30">{label}</span>
+                <span className="text-[11px] text-foreground/30">{label}</span>
               </div>
             )
           })}
@@ -915,7 +938,7 @@ function QuizReview({
       <div className="flex flex-col gap-3">
         <button
           onClick={() => setShowAnswers((v) => !v)}
-          className="flex items-center gap-1.5 text-xs text-white/35 transition-colors hover:text-white/55"
+          className="flex items-center gap-1.5 text-xs text-foreground/35 transition-colors hover:text-foreground/55"
         >
           <ChevronRightIcon
             className={`h-3.5 w-3.5 transition-transform ${showAnswers ? 'rotate-90' : ''}`}
@@ -931,7 +954,7 @@ function QuizReview({
               return (
                 <div
                   key={i}
-                  className="flex flex-col gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3"
+                  className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 px-4 py-3"
                 >
                   <div className="flex items-start gap-2">
                     <div
@@ -945,7 +968,7 @@ function QuizReview({
                         <XIcon className="h-2.5 w-2.5 text-red-400/70" />
                       )}
                     </div>
-                    <p className="flex-1 text-xs font-medium leading-snug text-white/60">
+                    <p className="flex-1 text-xs font-medium leading-snug text-foreground/60">
                       {q.question}
                     </p>
                     <span
@@ -954,7 +977,7 @@ function QuizReview({
                       {typeLabel(q.type)}
                     </span>
                   </div>
-                  <p className="ml-6 text-xs leading-relaxed text-white/30">
+                  <p className="ml-6 text-xs leading-relaxed text-foreground/30">
                     {q.explanation}
                   </p>
                 </div>
@@ -968,14 +991,14 @@ function QuizReview({
       <div className="flex gap-2">
         <button
           onClick={onRetake}
-          className="inline-flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition-colors hover:border-violet-500/50 hover:bg-violet-500/[0.15]"
+          className="inline-flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
         >
           <RegenerateIcon className="h-4 w-4" />
           Retake Quiz
         </button>
         <button
           onClick={onRegenerate}
-          className="inline-flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-4 py-2 text-sm font-medium text-white/40 transition-colors hover:border-white/[0.12] hover:text-white/60"
+          className="inline-flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-4 py-2 text-sm font-medium text-foreground/40 transition-colors hover:border-border hover:text-foreground/60"
         >
           <SparklesIcon className="h-4 w-4" />
           New Quiz
@@ -991,7 +1014,7 @@ function PhaseBadge({ phase }: { phase: Phase }) {
   switch (phase) {
     case 'ready':
       return (
-        <span className="rounded-full border border-violet-500/20 bg-violet-500/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-violet-400">
+        <span className="rounded-full border border-primary/20 bg-primary/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-primary">
           Ready
         </span>
       )
@@ -1010,8 +1033,8 @@ function PhaseBadge({ phase }: { phase: Phase }) {
       )
     case 'generating':
       return (
-        <span className="flex items-center gap-1.5 rounded-full border border-violet-500/20 bg-violet-500/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-violet-400">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+        <span className="flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/[0.08] px-2.5 py-0.5 text-[11px] font-medium text-primary">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
           Generating
         </span>
       )
@@ -1023,7 +1046,7 @@ function PhaseBadge({ phase }: { phase: Phase }) {
       )
     default:
       return (
-        <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-white/25">
+        <span className="rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-[11px] text-foreground/25">
           Not generated
         </span>
       )
@@ -1034,103 +1057,47 @@ function PhaseBadge({ phase }: { phase: Phase }) {
 
 function QuizIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
     </svg>
   )
 }
 
 function SparklesIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
     </svg>
   )
 }
 
 function RegenerateIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
     </svg>
   )
 }
 
 function WarningIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
     </svg>
   )
 }
 
 function PlayIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
     </svg>
   )
 }
 
 function CheckIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2.5}
-    >
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
     </svg>
   )
@@ -1138,67 +1105,31 @@ function CheckIcon({ className }: { className?: string }) {
 
 function XIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M6 18 18 6M6 6l12 12"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
     </svg>
   )
 }
 
 function CheckCircleIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
     </svg>
   )
 }
 
 function XCircleIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
     </svg>
   )
 }
 
 function ChevronRightIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
     </svg>
   )
@@ -1206,41 +1137,17 @@ function ChevronRightIcon({ className }: { className?: string }) {
 
 function EyeIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"
-      />
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
     </svg>
   )
 }
 
 function InfoIcon({ className }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={1.5}
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"
-      />
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
     </svg>
   )
 }

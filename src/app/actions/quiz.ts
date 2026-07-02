@@ -10,14 +10,90 @@ import type {
   ShortAnswerQuestion,
   ScenarioQuestion,
 } from '@/types/quiz'
+import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
-// ── Prompt constants ──────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const TEXT_CHAR_LIMIT = 14_000
 
 const SYSTEM_PROMPT = `You are an expert academic tutor creating interactive quiz questions for university students. Generate engaging, exam-relevant questions that test deep understanding. Always respond with a single valid JSON object. No markdown, no prose outside the JSON.`
 
-function buildUserPrompt(title: string, text: string): string {
+// ── Prompt builders ───────────────────────────────────────────────────────────
+
+function buildPromptFromAnalysis(title: string, analysis: DocumentAnalysis): string {
+  const highTopics = analysis.likely_exam_topics
+    .filter((t) => t.importance === 'high')
+    .map(
+      (t) =>
+        `- ${t.topic} [HIGH] — best question types: ${t.question_types.join(', ')} | related: ${t.related_concepts.join(', ')}`,
+    )
+    .join('\n')
+
+  const medTopics = analysis.likely_exam_topics
+    .filter((t) => t.importance === 'medium')
+    .map(
+      (t) =>
+        `- ${t.topic} [MEDIUM] — best question types: ${t.question_types.join(', ')}`,
+    )
+    .join('\n')
+
+  const conceptsText = analysis.key_concepts
+    .filter((c) => c.importance === 'core' || c.importance === 'supporting')
+    .map((c) => `- ${c.concept}: ${c.explanation}`)
+    .join('\n')
+
+  const defsText = analysis.definitions
+    .slice(0, 12)
+    .map((d) => `- ${d.term}: ${d.definition}`)
+    .join('\n')
+
+  const formulasText =
+    analysis.formulas.length > 0
+      ? '\n\nFORMULAS (include at least one calculation or application question per formula):\n' +
+        analysis.formulas.map((f) => `- ${f.expression}: ${f.description}`).join('\n')
+      : ''
+
+  return `Create an exam-quality quiz for "${title}".
+
+DIFFICULTY LEVEL: ${analysis.difficulty_level}
+SUBJECT: ${analysis.subject_area}
+
+HIGH PRIORITY EXAM TOPICS (must cover — these are most likely to appear in real exams):
+${highTopics || 'See key concepts below'}
+
+MEDIUM PRIORITY EXAM TOPICS:
+${medTopics || 'None'}
+
+KEY CONCEPTS:
+${conceptsText}
+
+DEFINITIONS TO TEST:
+${defsText}${formulasText}
+
+Respond with ONLY a JSON object in this exact schema:
+{
+  "title": "Quiz: descriptive title",
+  "questions": [
+    { "type": "multiple_choice", "question": "...", "options": ["Option A", "Option B", "Option C", "Option D"], "correct_index": 0, "explanation": "Why this answer is correct..." },
+    { "type": "true_false", "question": "A clear factual statement.", "correct": true, "explanation": "..." },
+    { "type": "short_answer", "question": "...", "model_answer": "Comprehensive 2–4 sentence answer...", "key_points": ["key point 1", "key point 2", "key point 3"], "explanation": "..." },
+    { "type": "scenario", "question": "Scenario context description. Which approach is most appropriate?", "options": ["Option A", "Option B", "Option C", "Option D"], "correct_index": 2, "explanation": "..." }
+  ]
+}
+
+Rules:
+- Exactly 12 questions: 4 multiple_choice, 3 true_false, 3 short_answer, 2 scenario
+- Prioritise HIGH importance exam topics — each high-priority topic must appear in at least one question
+- multiple_choice: exactly 4 options, correct_index 0–3
+- true_false: target common misconceptions in this subject
+- short_answer: include 2–4 key_points the ideal answer must cover
+- scenario: open with a realistic real-world application, then ask which approach is best; 4 options
+- All questions must be answerable from the document content
+- explanation must state WHY the correct answer is right
+- Match question type to topic: use short_answer for concepts needing explanation, scenario for application of principles`
+}
+
+function buildPromptFromText(title: string, text: string): string {
   const body =
     text.length > TEXT_CHAR_LIMIT
       ? text.slice(0, TEXT_CHAR_LIMIT) + '\n\n[Content truncated for processing]'
@@ -52,7 +128,7 @@ Rules:
 - Questions should test understanding and application, not just surface recall`
 }
 
-// ── Validation helpers ────────────────────────────────────────────────────────
+// ── Validation ────────────────────────────────────────────────────────────────
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string')
@@ -103,6 +179,24 @@ function validateQuestion(q: unknown): QuizQuestion | null {
   return null
 }
 
+// ── Concept matching ──────────────────────────────────────────────────────────
+
+function matchConcept(
+  text: string,
+  nodes: Array<{ id: string; label: string }>,
+): { concept_id: string; concept_title: string } | null {
+  const lower = text.toLowerCase()
+  let best: { id: string; label: string } | null = null
+  let bestLen = 0
+  for (const node of nodes) {
+    if (lower.includes(node.label.toLowerCase()) && node.label.length > bestLen) {
+      best = node
+      bestLen = node.label.length
+    }
+  }
+  return best ? { concept_id: best.id, concept_title: best.label } : null
+}
+
 // ── Server Action ─────────────────────────────────────────────────────────────
 
 export async function generateQuiz(documentId: string): Promise<Quiz> {
@@ -130,6 +224,18 @@ export async function generateQuiz(documentId: string): Promise<Quiz> {
     throw new Error('OPENAI_API_KEY is not set. Add it to your .env.local file.')
   }
 
+  // Prefer structured analysis over raw text when available
+  const { data: analysis } = await supabase
+    .from('document_analysis')
+    .select('*')
+    .eq('document_id', documentId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  const userPrompt = analysis
+    ? buildPromptFromAnalysis(doc.title, analysis as DocumentAnalysis)
+    : buildPromptFromText(doc.title, doc.extracted_text)
+
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
   let rawContent: string
@@ -138,10 +244,10 @@ export async function generateQuiz(documentId: string): Promise<Quiz> {
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
       temperature: 0.4,
-      max_tokens: 2500,
+      max_tokens: 3000,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserPrompt(doc.title, doc.extracted_text) },
+        { role: 'user', content: userPrompt },
       ],
     })
 
@@ -179,7 +285,17 @@ export async function generateQuiz(documentId: string): Promise<Quiz> {
     throw new Error('OpenAI returned no valid questions. Please try again.')
   }
 
-  // Replace any prior quiz for this document
+  const graphNodes = analysis
+    ? ((analysis as DocumentAnalysis).concept_graph?.nodes ?? [])
+    : []
+
+  const enrichedQuestions: QuizQuestion[] = questions.map((q) => {
+    const match = matchConcept(q.question + ' ' + q.explanation, graphNodes)
+    return match ? { ...q, ...match } : q
+  })
+
+  // quiz_attempts reference quizzes.id with ON DELETE CASCADE so old attempts
+  // are cleaned up automatically when the quiz row is deleted below.
   await supabase
     .from('quizzes')
     .delete()
@@ -192,7 +308,7 @@ export async function generateQuiz(documentId: string): Promise<Quiz> {
       document_id: documentId,
       user_id: user.id,
       title,
-      questions,
+      questions: enrichedQuestions,
       model: 'gpt-4o-mini',
     })
     .select()
