@@ -414,13 +414,14 @@ function ActionIcon({ type, className }: { type: string; className?: string }) {
 // ── TutorContent — renders text with fenced code blocks ───────────────────────
 
 function TutorContent({ content }: { content: string }) {
-  // Split on fenced code blocks: ```lang\n...\n```
-  const parts = content.split(/(```[\w]*\n[\s\S]*?```)/g)
+  // Split on fenced code blocks. Allow optional trailing whitespace after the
+  // language tag (```python  \n) since models occasionally emit a trailing space.
+  const parts = content.split(/(```[\w]*[ \t]*\n[\s\S]*?```)/g)
 
   return (
     <div className="text-sm leading-7 text-foreground/78">
       {parts.map((part, i) => {
-        const codeMatch = part.match(/^```([\w]*)\n([\s\S]*?)```$/)
+        const codeMatch = part.match(/^```([\w]*)[ \t]*\n([\s\S]*?)```$/)
         if (codeMatch) {
           const lang = codeMatch[1]
           const code = codeMatch[2].replace(/\n$/, '')

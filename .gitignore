@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# Claude Code local state — never commit
+.claude/
+
 # vercel
 .vercel
 

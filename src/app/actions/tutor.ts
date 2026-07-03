@@ -75,36 +75,90 @@ You have access to:
 • Their mastery score, forgetting risk, and learning velocity per concept
 • Their adaptive study plan and concept dependency graph
 
-TEACHING FORMAT — use this structure for most answers:
-What happened: [1 sentence naming the concept or the mistake]
-Correct idea: [2–3 sentences on what's right, from the document]
+DEFAULT TEACHING FORMAT (for explanations only):
+What happened: [1 sentence naming the concept or mistake]
+Correct idea: [2–3 sentences from the document]
 Why the confusion: [1–2 sentences on the likely misunderstanding]
-Example: [brief concrete example from the document]
-Check (CONCEPT: <exact concept title from KEY CONCEPTS>): [one short question to verify their understanding]
-Next step: [specific named action — mention the concept, not just "review flashcards"]
+Example: [brief concrete example]
+Check (CONCEPT: <exact concept title from KEY CONCEPTS>): [one short question]
+Next step: [specific named action]
 
-Adapt the format to the question — skip sections that don't apply. Keep answers to ~200 words unless more depth is clearly needed.
+IMPORTANT: Each request includes a MODE/FORMAT instruction. That instruction OVERRIDES this default format. Always follow the specific format given in the MODE instruction.
 
 Rules:
 • Ground answers in the provided document material
 • Use RECENT MISTAKES data when available — name the exact concept and wrong answer
-• If exact quiz answer data is missing: say "I can see [concept] is a weak area but don't have your exact answer saved yet"
 • Be specific: name the concept, not just "this topic"
-• Do not say "this isn't in your document" unless you have genuinely checked the full content provided
 • Never hallucinate facts
 • Do not repeat the question back or pad with filler
-• If asked for example code, wrap it in a fenced code block with the language tag (e.g. \`\`\`python ... \`\`\`). Keep examples under 20 lines. After the snippet, explain the key lines in plain English — one short sentence per important part.
-• Use DEPENDENCY DATA when available to explain why a concept feels hard (e.g. "Inheritance requires understanding Classes first — your Classes mastery is 40%")
+• For code: use fenced blocks with language tag on the same line as the backticks — e.g. \`\`\`python followed immediately by a newline then code then \`\`\` on its own line. Keep examples under 20 lines.
+• Use DEPENDENCY DATA when available (e.g. "Inheritance requires understanding Classes first — your Classes mastery is 40%")
 
-ACTION SUGGESTION (optional — only when clearly warranted):
-After your main answer, you may add ONE action on a new line:
-ACTION: <type> | <concept_title_or_blank> | <user-facing label>
+ACTION LINE — include this whenever your response ends with a recommendation to open a tab or do something specific:
+ACTION: <type> | <concept_title_or_blank> | <label>
 
 Valid types: open_flashcards | open_quiz | open_notes | open_visuals | open_weak_topics | continue_tutor
 
-Only include ACTION when the recommendation is unambiguous (e.g. "ACTION: open_flashcards | Mitosis | Practise Mitosis flashcards"). Skip it for general conversational replies.`
+Rule: if your last sentence or "Next step" references flashcards, quiz, notes, visuals, or weak topics — you MUST include the ACTION line. Put it on the very last line of your response.`
 
 // ── Mode instructions ─────────────────────────────────────────────────────────
+
+// ── Intent-specific format instructions ──────────────────────────────────────
+// Injected into the user message; override the default TEACHING FORMAT for
+// practice / next_action / mistake_debug / prerequisite_gap intents.
+
+const INTENT_FORMAT: Partial<Record<TutorIntent, string>> = {
+  practice: `FORMAT — PRACTICE MODE (follow this exactly, do not use the explanation template):
+"Let's practise [weakest concept title] — your weakest area.
+
+Q1: [targeted question testing a specific aspect]
+
+Q2: [different angle on the same concept] (include only if useful)
+
+Answer Q1 first and I'll mark it.
+
+Check (CONCEPT: <exact concept title>): [graded check question]"
+
+Rules: Pick the WEAKEST CONCEPT from WEAK CONCEPTS. Write 1–3 short questions. No long explanations first.`,
+
+  next_action: `FORMAT — STUDY PLAN MODE (follow this exactly, do not use the explanation template):
+"Study next: [concept title]
+Why: [one sentence — mention mastery % or exam importance]
+
+Your session (~X min total):
+1. [specific action] — [concept] (~Y min)
+2. [specific action] — [concept] (~Z min)
+3. [specific action] — [concept] (~W min)
+
+[One sentence: which tab to open first and why.]"
+
+Rules: Use PRIORITY STUDY BLOCKS. Name actual concepts. Be specific.`,
+
+  mistake_debug: `FORMAT — MISTAKE DEBUG MODE (follow this exactly):
+"What you got wrong: [concept] — you answered "[wrong answer]", correct is "[correct answer]"
+Pattern: [one sentence on why this mistake happens]
+Corrected idea: [2–3 sentences explaining what's right]
+
+Retry:
+Check (CONCEPT: <exact concept title>): [retry question on the same concept]"
+
+Rules: Start from RECENT QUIZ MISTAKES. Name the exact wrong answer if available.`,
+
+  prerequisite_gap: `FORMAT — PREREQUISITE MODE (follow this exactly):
+"Blocked: [concept the student can't progress on]
+Missing foundation: [prerequisite concept] — [mastery]%
+Why it blocks: [1–2 sentences]
+
+Study in this order:
+1. [prerequisite concept] (~X min) — [brief reason]
+2. [target concept] (~Y min)
+
+[One sentence: actionable next step.]"
+
+Rules: Use BLOCKED CONCEPTS and DEPENDENCY MAP data.`,
+}
+
+// ── Mode instructions (used for concept_explain / general / simplify / exam_prep) ─
 
 const MODE_INSTRUCTION: Record<TutorMode, string> = {
   explain:
@@ -112,22 +166,22 @@ const MODE_INSTRUCTION: Record<TutorMode, string> = {
 
   quiz_help:
     `QUIZ HELP MODE — the student answered something wrong.
-Check RECENT MISTAKES first. If mistake data is available: name the exact concept, the wrong answer they gave, and the correct answer.
+Check RECENT MISTAKES first. Name the exact concept, wrong answer, and correct answer.
 If no mistake data is saved yet: say "I can see [concept] is a weak area but don't have your exact answer saved yet."
-Then follow the teaching format fully: What happened → Correct idea → Why the confusion → Example → Check question → Next step.
+Follow the teaching format: What happened → Correct idea → Why the confusion → Example → Check question → Next step.
 Be direct. Do not pad.`,
 
   exam_prep:
-    'Frame the answer for exam conditions. Highlight what an examiner wants to see: key terms, structure, and common traps. End with a check question testing exam-readiness.',
+    'Frame the answer for exam conditions. Highlight key terms, structure, and common traps. End with a check question testing exam-readiness.',
 
   weak_topic:
-    'The student is weak here. Start from first principles. Be extra clear and concrete. Address the most likely misconception before explaining the correct idea. Build up step by step.',
+    'The student is weak here. Start from first principles. Address the most likely misconception before explaining the correct idea. Build up step by step.',
 
   simplify:
-    'Use plain language, everyday analogies, and short sentences. Imagine explaining to a bright 16-year-old who has never studied this subject. Avoid jargon — or define it immediately when used.',
+    'Use plain language, everyday analogies, and short sentences. Explain like to a bright 16-year-old. Avoid jargon — or define it immediately.',
 
   next_step:
-    'Tell the student exactly what to study next, why, and in what order. Reference their specific weak concepts by name. Point to their highest-priority study block. Be concrete, not generic.',
+    'Tell the student exactly what to study next, why, and in what order. Reference weak concepts by name. Point to the highest-priority study block. Be concrete, not generic.',
 }
 
 const MODE_LABEL: Record<TutorMode, string> = {
@@ -554,7 +608,8 @@ const VALID_ACTION_TYPES = new Set<TutorActionType>([
 ])
 
 function parseActionTag(text: string): { answer: string; suggestedAction: TutorAction | null } {
-  const match = text.match(/\nACTION:\s*(\w+)\s*\|\s*([^|\n]*)\s*\|\s*(.+)/m)
+  // Use ^ with m flag so it matches ACTION: at the start of any line (no \n prefix needed)
+  const match = text.match(/^ACTION:\s*(\w+)\s*\|\s*([^|\n]*)\s*\|\s*(.+)$/m)
   if (!match) return { answer: text.trim(), suggestedAction: null }
 
   const type = match[1].trim() as TutorActionType
@@ -563,9 +618,53 @@ function parseActionTag(text: string): { answer: string; suggestedAction: TutorA
   const concept_title = match[2].trim() || undefined
   const label = match[3].trim()
 
-  const answer = text.replace(/\n?ACTION:\s*[^\n]+/m, '').trim()
+  // Strip the ACTION line (and the preceding newline if any)
+  const answer = text.replace(/\n?ACTION:[^\n]+$/m, '').trim()
 
   return { answer, suggestedAction: { type, concept_title, label } }
+}
+
+// ── Server-side fallback action ───────────────────────────────────────────────
+// Used when the model didn't emit an ACTION tag but intent clearly warrants one.
+
+function inferFallbackAction(
+  intent: TutorIntent,
+  concepts: ConceptIntelligence[],
+  plan: StudyPlan,
+): TutorAction | null {
+  switch (intent) {
+    case 'practice': {
+      const weakest = concepts
+        .filter(c => c.review_count > 0)
+        .sort((a, b) => a.mastery_score - b.mastery_score)[0]
+      if (!weakest) return null
+      const hasQuizHistory = concepts.some(c => c.mistake_patterns.length > 0)
+      return hasQuizHistory
+        ? { type: 'open_quiz',       concept_title: weakest.concept_title, label: `Quiz: ${weakest.concept_title}` }
+        : { type: 'open_flashcards', concept_title: weakest.concept_title, label: `Flashcards: ${weakest.concept_title}` }
+    }
+    case 'next_action': {
+      const first = plan.study_blocks[0]
+      if (!first) return null
+      const typeMap: Record<string, TutorActionType> = {
+        quiz:       'open_quiz',
+        flashcards: 'open_flashcards',
+        review:     'open_flashcards',
+        relearn:    'open_notes',
+        mixed:      'open_quiz',
+      }
+      const type: TutorActionType = typeMap[first.block_type] ?? 'open_flashcards'
+      return { type, concept_title: first.concept_title, label: `Start: ${first.concept_title}` }
+    }
+    case 'mistake_debug': {
+      const hasMistakes = concepts.some(c => c.mistake_patterns.length > 0)
+      return hasMistakes ? { type: 'open_weak_topics', label: 'See weak topics' } : null
+    }
+    case 'prerequisite_gap':
+      return { type: 'open_notes', label: 'Review notes' }
+    default:
+      return null
+  }
 }
 
 // ── Check-line parser ─────────────────────────────────────────────────────────
@@ -646,12 +745,12 @@ export async function askTutor({
     content: m.content,
   }))
 
-  const isMistakeFocused = intent === 'mistake_debug'
-  const modePrefix = isMistakeFocused && mode !== 'quiz_help'
-    ? `[Mode: ${MODE_LABEL[mode]}] Note: the student appears to be asking about a wrong answer — use RECENT QUIZ MISTAKES data.\n\n`
-    : `[Mode: ${MODE_LABEL[mode]}]\n${MODE_INSTRUCTION[mode]}\n\n`
+  // Intent format overrides mode instruction for practice/next_action/mistake_debug/prerequisite_gap.
+  // For concept_explain and general, fall back to mode instruction so explain/simplify/exam_prep still work.
+  const formatInstruction = INTENT_FORMAT[intent]
+    ?? `[Mode: ${MODE_LABEL[mode]}]\n${MODE_INSTRUCTION[mode]}`
 
-  const currentMessage = `${modePrefix}${question}`
+  const currentMessage = `${formatInstruction}\n\n${question}`
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -678,7 +777,8 @@ export async function askTutor({
     throw new Error(`Tutor error: ${msg}`)
   }
 
-  const { answer, suggestedAction } = parseActionTag(rawContent)
+  const { answer, suggestedAction: modelAction } = parseActionTag(rawContent)
+  const suggestedAction = modelAction ?? inferFallbackAction(intent, intelligence.concepts, plan)
   const checkMeta = parseCheckMeta(answer, intelligence.concepts)
 
   return {
