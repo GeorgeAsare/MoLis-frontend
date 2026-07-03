@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { generateVisuals } from '@/app/actions/visuals'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
@@ -20,40 +20,40 @@ interface Props {
 // ── VisualsPanel ──────────────────────────────────────────────────────────────
 
 export function VisualsPanel({ documentId, hasExtractedText, initialVisuals }: Props) {
-  const [phase, setPhase] = useState<Phase>(initialVisuals ? 'done' : 'idle')
-  const [visuals, setVisuals] = useState<StudyVisualSet | null>(initialVisuals)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
+  const [phase, setPhase]         = useState<Phase>(initialVisuals ? 'done' : 'idle')
+  const [visuals, setVisuals]     = useState<StudyVisualSet | null>(initialVisuals)
+  const [errorMessage, setError]  = useState<string | null>(null)
   const phaseRef = useRef(phase)
-  useEffect(() => {
-    phaseRef.current = phase
-  })
 
   async function triggerGenerate() {
     if (phaseRef.current === 'generating') return
+    phaseRef.current = 'generating'
     setPhase('generating')
-    setErrorMessage(null)
+    setError(null)
     try {
       const result = await generateVisuals(documentId)
       setVisuals(result)
+      phaseRef.current = 'done'
       setPhase('done')
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Visual generation failed')
+      setError(err instanceof Error ? err.message : 'Visual generation failed')
+      phaseRef.current = 'error'
       setPhase('error')
     }
   }
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Header row */}
+
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-foreground/75">Visual Learning</h3>
           <p className="mt-0.5 text-xs text-foreground/30">
-            AI-generated image prompts for educational diagrams
+            AI-generated educational diagrams from your document
           </p>
         </div>
-        {phase === 'done' && visuals && (
+        {phase === 'done' && visuals && visuals.visuals.length > 0 && (
           <button
             onClick={triggerGenerate}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55"
@@ -71,9 +71,12 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals }: P
 
       {phase === 'error' && (
         <div className="flex flex-col gap-4">
-          <div className="flex items-start gap-2.5 rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
+          <div className="flex items-start gap-2.5 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
             <WarningIcon className="mt-0.5 h-4 w-4 shrink-0 text-red-400/70" />
-            <p className="text-sm leading-relaxed text-red-400/80">{errorMessage}</p>
+            <div className="flex flex-col gap-0.5">
+              <p className="text-sm font-medium text-red-400/90">Generation failed</p>
+              <p className="text-xs leading-relaxed text-red-400/65">{errorMessage}</p>
+            </div>
           </div>
           <button
             onClick={triggerGenerate}
@@ -87,11 +90,9 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals }: P
       {phase === 'generating' && <GeneratingSkeleton />}
 
       {phase === 'done' && visuals && (
-        visuals.visuals.length === 0 ? (
-          <NoVisualsState onRegenerate={triggerGenerate} />
-        ) : (
-          <VisualsGrid visuals={visuals.visuals} />
-        )
+        visuals.visuals.length === 0
+          ? <NoVisualsState onRegenerate={triggerGenerate} />
+          : <VisualsGrid visuals={visuals.visuals} onRegenerate={triggerGenerate} />
       )}
     </div>
   )
@@ -111,19 +112,22 @@ function IdleState({
       <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/20 bg-primary/[0.08]">
         <ImageIcon className="h-7 w-7 text-primary/70" />
       </div>
-      <h3 className="text-sm font-semibold text-foreground/70">No visual aids yet</h3>
+      <h3 className="text-sm font-semibold text-foreground/70">No diagrams yet</h3>
       <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-foreground/30">
         {hasExtractedText
-          ? 'Generate visual learning aids from this document. MoLis detects visual topics (anatomy, networks, data structures) and creates educational diagram prompts.'
-          : 'Extract text from your document first, then generate visual aids.'}
+          ? 'MoLis will analyse your document and generate labelled educational diagrams for visual concepts — hierarchies, process flows, concept maps, and more.'
+          : 'Extract text from your document first, then generate visual diagrams.'}
       </p>
+      {hasExtractedText && (
+        <p className="mt-2 text-[10px] text-foreground/20">Generation takes 30–90 seconds</p>
+      )}
       <button
         onClick={onGenerate}
         disabled={!hasExtractedText}
         className="mt-6 inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-5 py-2.5 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15] disabled:cursor-not-allowed disabled:opacity-40"
       >
         <SparklesIcon className="h-4 w-4" />
-        Generate Visual Learning Aids
+        Generate Diagrams
       </button>
     </div>
   )
@@ -139,7 +143,7 @@ function NoVisualsState({ onRegenerate }: { onRegenerate: () => void }) {
       </div>
       <p className="text-sm font-medium text-foreground/40">No visual topics detected</p>
       <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-foreground/20">
-        This document doesn&apos;t appear to contain concepts that benefit from visual diagrams. Visual aids work best for anatomy, networks, circuits, and data structures.
+        This document doesn&apos;t appear to contain concepts that benefit from diagrams. Visual aids work best for anatomy, networks, OOP hierarchies, circuits, and data structures.
       </p>
       <button
         onClick={onRegenerate}
@@ -156,22 +160,22 @@ function NoVisualsState({ onRegenerate }: { onRegenerate: () => void }) {
 function GeneratingSkeleton() {
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/20 bg-primary/10">
-          <span className="h-4 w-4 animate-spin rounded-full border border-primary/60 border-t-transparent" />
+      <div className="flex items-center gap-3 rounded-xl border border-primary/15 bg-primary/[0.04] px-4 py-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
         </div>
-        <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium text-foreground/60">Detecting visual topics…</p>
-          <p className="text-xs text-foreground/25">Powered by GPT-4o mini</p>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-sm font-medium text-foreground/65">Generating educational diagrams…</p>
+          <p className="text-xs text-foreground/25">GPT-4o mini → DALL·E 3 · may take up to 90 seconds</p>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {[0, 1].map((i) => (
+        {[0, 1].map(i => (
           <div
             key={i}
-            className="flex flex-col gap-3 rounded-2xl border border-border bg-muted/30 overflow-hidden"
+            className="flex flex-col gap-3 overflow-hidden rounded-2xl border border-border bg-muted/30"
           >
-            <Skeleton className="h-36 w-full rounded-none" />
+            <Skeleton className="h-48 w-full rounded-none" />
             <div className="flex flex-col gap-2 p-4">
               <Skeleton className="h-4 w-2/3 rounded-full" />
               <Skeleton className="h-3 w-full rounded-full" />
@@ -186,12 +190,33 @@ function GeneratingSkeleton() {
 
 // ── VisualsGrid ───────────────────────────────────────────────────────────────
 
-function VisualsGrid({ visuals }: { visuals: StudyVisualItem[] }) {
+function VisualsGrid({
+  visuals,
+  onRegenerate,
+}: {
+  visuals: StudyVisualItem[]
+  onRegenerate: () => void
+}) {
+  const anyFailed = visuals.some(v => v.status === 'failed')
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      {visuals.map((visual, i) => (
-        <VisualCard key={i} visual={visual} />
-      ))}
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {visuals.map((visual, i) => (
+          <VisualCard key={i} visual={visual} />
+        ))}
+      </div>
+      {anyFailed && (
+        <p className="text-center text-xs text-foreground/25">
+          Some diagrams failed to generate.{' '}
+          <button
+            onClick={onRegenerate}
+            className="underline underline-offset-2 transition-colors hover:text-foreground/45"
+          >
+            Regenerate
+          </button>{' '}
+          to try again.
+        </p>
+      )}
     </div>
   )
 }
@@ -199,50 +224,43 @@ function VisualsGrid({ visuals }: { visuals: StudyVisualItem[] }) {
 // ── VisualCard ────────────────────────────────────────────────────────────────
 
 function VisualCard({ visual }: { visual: StudyVisualItem }) {
-  const statusStyle = {
-    pending: 'text-amber-400 border-amber-500/20 bg-amber-500/[0.07]',
-    generated: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/[0.07]',
-    failed: 'text-red-400 border-red-500/20 bg-red-500/[0.07]',
-  }[visual.status]
-
-  const statusLabel = {
-    pending: 'Prompt Ready',
-    generated: 'Generated',
-    failed: 'Failed',
-  }[visual.status]
-
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
-      {/* Image placeholder */}
-      <div className="relative flex h-44 flex-col items-center justify-center bg-gradient-to-br from-primary/20 to-background p-4">
-        {visual.image_url ? (
+      {/* Image area */}
+      <div className="relative flex h-52 items-center justify-center bg-gradient-to-br from-primary/10 via-background to-muted/30">
+        {visual.status === 'generated' && visual.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={visual.image_url}
             alt={visual.topic}
             className="h-full w-full object-contain"
           />
+        ) : visual.status === 'failed' ? (
+          <div className="flex flex-col items-center gap-2 p-6 text-center">
+            <WarningIcon className="h-8 w-8 text-red-400/40" />
+            <p className="text-xs text-foreground/25">Image generation failed for this diagram</p>
+          </div>
         ) : (
-          <>
+          <div className="flex flex-col items-center gap-2 p-6 text-center">
             <DiagramIcon className="h-10 w-10 text-primary/20" />
-            <p className="mt-3 text-center text-[11px] leading-relaxed text-foreground/20 px-4">
-              {visual.status === 'pending'
-                ? 'Image will be generated when API is configured'
-                : 'Image generation failed'}
-            </p>
-          </>
+            <p className="text-xs text-foreground/20">Diagram pending</p>
+          </div>
         )}
       </div>
 
       {/* Info */}
-      <div className="flex flex-col gap-2.5 p-4">
+      <div className="flex flex-col gap-2 p-4">
         <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-semibold text-foreground/75">{visual.topic}</p>
-          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusStyle}`}>
-            {statusLabel}
-          </span>
+          <p className="text-sm font-semibold leading-snug text-foreground/80">{visual.topic}</p>
+          {visual.status === 'failed' && (
+            <span className="shrink-0 rounded-full border border-red-500/20 bg-red-500/[0.07] px-2 py-0.5 text-[10px] font-medium text-red-400">
+              Failed
+            </span>
+          )}
         </div>
-        <p className="text-xs leading-relaxed text-foreground/30">{visual.image_prompt}</p>
+        {visual.description && (
+          <p className="text-xs leading-relaxed text-foreground/40">{visual.description}</p>
+        )}
       </div>
     </div>
   )
