@@ -8,7 +8,7 @@ import type { DocumentAnalysis } from '@/types/documentAnalysis'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TEXT_CHAR_LIMIT = 10_000
-const MAX_VISUALS = 3
+const DEFAULT_VISUAL_GENERATION_COUNT = 1
 const STORAGE_BUCKET = 'study-visuals'
 const PROMPT_MODEL = 'gpt-4o-mini'
 // Configurable via OPENAI_IMAGE_MODEL env var; falls back to gpt-image-2
@@ -18,7 +18,7 @@ function getImageModel(): string {
 
 // ── Phase 1: prompt generation ────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are an expert educational content creator. Identify concepts that genuinely benefit from visual diagrams. Only suggest visuals for concepts where a diagram adds real understanding. Respond with a single valid JSON object.`
+const SYSTEM_PROMPT = `You are an expert educational content creator. Choose the single most useful educational visual for helping a student understand a document. Only suggest a visual if a diagram genuinely aids understanding. Respond with a single valid JSON object.`
 
 function buildPromptFromAnalysis(title: string, analysis: DocumentAnalysis): string {
   const diagramSections = analysis.sections
@@ -36,7 +36,7 @@ function buildPromptFromAnalysis(title: string, analysis: DocumentAnalysis): str
     ? '\n\nFORMULAS/PROCESSES:\n' + analysis.formulas.map(f => `- ${f.expression}: ${f.description}`).join('\n')
     : ''
 
-  return `Identify 1–3 educational visual diagrams for "${title}".
+  return `Choose the single most useful educational visual diagram for "${title}".
 
 SUBJECT: ${analysis.subject_area} | DIFFICULTY: ${analysis.difficulty_level}
 
@@ -46,27 +46,26 @@ ${diagramSections || 'None flagged — use core concepts below'}
 CORE CONCEPTS:
 ${coreConcepts || 'See sections above'}${formulasText}
 
-Respond ONLY with this JSON:
+Respond ONLY with this JSON (exactly 1 item, or empty array if no visual concept exists):
 {
   "visuals": [
     {
       "topic": "Short diagram title (max 50 chars)",
       "description": "One sentence: what this diagram shows and why it helps understanding",
-      "visual_type": "diagram | concept_map | process_flow | comparison | hierarchy",
-      "image_prompt": "Detailed prompt for dall-e-3 image generation"
+      "visual_type": "concept_map | hierarchy | process_flow | diagram | comparison",
+      "image_prompt": "Detailed image generation prompt"
     }
   ]
 }
 
 Rules:
-- Maximum 3 visuals. Return empty array if no genuinely visual concepts exist.
-- Good candidates: anatomy, CS (data structures, networks, algorithms, OOP hierarchies, CPU architecture), chemistry (molecular/reaction diagrams), physics (circuits, waves), biology (cycles, ecosystems), process flows, dependency graphs, comparison tables
-- Bad candidates: abstract theories, pure definitions, historical facts, lists
-- image_prompt MUST describe a precise educational diagram:
-  "A detailed, labelled educational diagram showing [specific elements with labels]. Clean technical illustration style on a dark navy background, white and light-coloured text labels, high contrast. [Visual type: hierarchy/flowchart/comparison/etc]. Professional educational quality, no decorative elements."
-- For OOP/CS: show class boxes, arrows, labels, method names
-- For biology/chemistry: show structures with clear labels
-- For processes: show numbered steps with connecting arrows`
+- Return exactly 1 visual — the highest-value diagram for this document.
+- Best candidates: OOP hierarchies, data structures, network topology, anatomy, molecule/reaction diagrams, physics circuits, biology cycles, process flows.
+- If no concept genuinely benefits from a diagram, return an empty array.
+- image_prompt must describe a precise, labelled educational diagram:
+  "A detailed, labelled educational diagram showing [specific elements]. Clean technical illustration style on a dark navy background, white text labels, high contrast. [hierarchy/flowchart/concept map]. Professional quality, no decorative elements."
+- For OOP/CS: show class boxes, arrows, labels, method signatures.
+- For processes: numbered steps with connecting arrows.`
 }
 
 function buildPromptFromText(title: string, text: string): string {
@@ -74,28 +73,28 @@ function buildPromptFromText(title: string, text: string): string {
     ? text.slice(0, TEXT_CHAR_LIMIT) + '\n\n[Content truncated]'
     : text
 
-  return `Identify 1–3 educational visual diagrams for "${title}".
+  return `Choose the single most useful educational visual diagram for "${title}".
 
 DOCUMENT CONTENT:
 ${body}
 
-Respond ONLY with this JSON:
+Respond ONLY with this JSON (exactly 1 item, or empty array if no visual concept exists):
 {
   "visuals": [
     {
       "topic": "Short diagram title (max 50 chars)",
       "description": "One sentence: what this diagram shows and why it helps understanding",
-      "visual_type": "diagram | concept_map | process_flow | comparison | hierarchy",
-      "image_prompt": "Detailed prompt for dall-e-3 image generation"
+      "visual_type": "concept_map | hierarchy | process_flow | diagram | comparison",
+      "image_prompt": "Detailed image generation prompt"
     }
   ]
 }
 
 Rules:
-- Maximum 3 visuals. Return empty array if no genuinely visual concepts exist.
-- Good candidates: anatomy, CS (data structures, networks, OOP, algorithms), chemistry, physics, biology, process flows
-- Bad candidates: abstract theories, lists of facts, historical timelines
-- image_prompt must describe a precise educational diagram with labels, on a dark background, professional quality.`
+- Return exactly 1 visual — the highest-value diagram for this document.
+- Best candidates: OOP hierarchies, data structures, anatomy, circuits, biology cycles, process flows.
+- If no concept genuinely benefits from a diagram, return an empty array.
+- image_prompt must describe a precise, labelled educational diagram on a dark background, professional quality.`
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -117,7 +116,7 @@ function safeVisuals(value: unknown): StudyVisualItem[] {
         typeof r.image_prompt === 'string' && r.image_prompt.trim() !== ''
       )
     })
-    .slice(0, MAX_VISUALS)
+    .slice(0, DEFAULT_VISUAL_GENERATION_COUNT)
     .map(x => ({
       topic:        x.topic.trim(),
       description:  typeof x.description === 'string' ? x.description.trim() : '',

@@ -165,12 +165,12 @@ function GeneratingSkeleton() {
           <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
         </div>
         <div className="flex flex-col gap-0.5">
-          <p className="text-sm font-medium text-foreground/65">Generating educational diagrams…</p>
-          <p className="text-xs text-foreground/25">GPT-4o mini → DALL·E 3 · may take up to 90 seconds</p>
+          <p className="text-sm font-medium text-foreground/65">Generating educational diagram…</p>
+          <p className="text-xs text-foreground/25">This can take 1–3 minutes · please keep this tab open</p>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {[0, 1].map(i => (
+      <div className="grid grid-cols-1 gap-4">
+        {[0].map(i => (
           <div
             key={i}
             className="flex flex-col gap-3 overflow-hidden rounded-2xl border border-border bg-muted/30"
