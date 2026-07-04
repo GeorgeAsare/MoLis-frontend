@@ -10,8 +10,11 @@ import type { DocumentAnalysis } from '@/types/documentAnalysis'
 const TEXT_CHAR_LIMIT = 10_000
 const MAX_VISUALS = 3
 const STORAGE_BUCKET = 'study-visuals'
-const IMAGE_MODEL = 'dall-e-3'
 const PROMPT_MODEL = 'gpt-4o-mini'
+// Configurable via OPENAI_IMAGE_MODEL env var; falls back to gpt-image-2
+function getImageModel(): string {
+  return process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2'
+}
 
 // ── Phase 1: prompt generation ────────────────────────────────────────────────
 
@@ -133,41 +136,91 @@ async function generateAndStoreImage(
   documentId: string,
   item: StudyVisualItem,
   index: number,
+  imageModel: string,
 ): Promise<StudyVisualItem> {
+
+  // ── Stage A: call OpenAI image generation ────────────────────────────────
+
+  let imageBuffer: Buffer
   try {
     const response = await openai.images.generate({
-      model: IMAGE_MODEL,
+      model:  imageModel,
       prompt: item.image_prompt,
-      size: '1024x1024',
-      quality: 'standard',
-      response_format: 'b64_json',
-      n: 1,
+      size:   '1024x1024',
+      n:      1,
     })
 
-    const b64 = response.data?.[0]?.b64_json
-    if (!b64) throw new Error('No image data returned from dall-e-3')
+    const image = response.data?.[0]
 
-    const buffer = Buffer.from(b64, 'base64')
-    // Fixed path per user/doc/index so regeneration overwrites cleanly
-    const storagePath = `${userId}/${documentId}/${index}.png`
+    if (image?.b64_json) {
+      // GPT Image models return base64 by default
+      imageBuffer = Buffer.from(image.b64_json, 'base64')
+    } else if (image?.url) {
+      // Fallback: fetch URL server-side (DALL·E-style response)
+      const fetched = await fetch(image.url)
+      if (!fetched.ok) throw new Error(`Failed to download generated image (HTTP ${fetched.status})`)
+      imageBuffer = Buffer.from(await fetched.arrayBuffer())
+    } else {
+      throw new Error('Image model unavailable. Check OPENAI_IMAGE_MODEL or API access.')
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[visuals] image_generation_failed', {
+      topic: item.topic,
+      model: imageModel,
+      index,
+      error: msg.slice(0, 400),
+    })
+    return {
+      ...item,
+      image_url:     null,
+      status:        'failed',
+      error:         msg.slice(0, 200),
+      failure_stage: 'image_generation',
+    }
+  }
 
+  // ── Stage B: upload to Supabase Storage ──────────────────────────────────
+
+  // Fixed path per user/doc/index — regeneration overwrites cleanly
+  const storagePath = `${userId}/${documentId}/${index}.png`
+
+  try {
     const { error: uploadError } = await supabase.storage
       .from(STORAGE_BUCKET)
-      .upload(storagePath, buffer, {
+      .upload(storagePath, imageBuffer, {
         contentType: 'image/png',
-        upsert: true,
+        upsert:      true,
       })
 
-    if (uploadError) throw new Error(`Storage upload failed: ${uploadError.message}`)
+    if (uploadError) throw new Error(uploadError.message)
 
     const { data: urlData } = supabase.storage
       .from(STORAGE_BUCKET)
       .getPublicUrl(storagePath)
 
+    console.log('[visuals] image_stored', {
+      topic: item.topic,
+      path:  storagePath,
+      url:   urlData.publicUrl.slice(0, 80) + '…',
+    })
+
     return { ...item, image_url: urlData.publicUrl, status: 'generated' }
-  } catch {
-    // One image failing must not crash the whole generation
-    return { ...item, image_url: null, status: 'failed' }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[visuals] storage_upload_failed', {
+      topic:       item.topic,
+      bucket:      STORAGE_BUCKET,
+      storagePath,
+      error:       msg.slice(0, 400),
+    })
+    return {
+      ...item,
+      image_url:     null,
+      status:        'failed',
+      error:         msg.slice(0, 200),
+      failure_stage: 'storage_upload',
+    }
   }
 }
 
@@ -202,6 +255,8 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
     .maybeSingle()
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const imageModel = getImageModel()
+  console.log('[visuals] starting_generation', { documentId, imageModel, promptModel: PROMPT_MODEL })
 
   // ── Phase 1: identify visual topics + build image prompts ─────────────────
 
@@ -255,13 +310,21 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
     return saved as StudyVisualSet
   }
 
-  // ── Phase 2: generate actual images with dall-e-3, upload to storage ─────
+  console.log('[visuals] prompts_ready', { count: prompts.length, topics: prompts.map(p => p.topic) })
+
+  // ── Phase 2: generate actual images, upload to storage ───────────────────
 
   const generated: StudyVisualItem[] = []
   for (let i = 0; i < prompts.length; i++) {
-    const result = await generateAndStoreImage(openai, supabase, user.id, documentId, prompts[i], i)
+    const result = await generateAndStoreImage(
+      openai, supabase, user.id, documentId, prompts[i], i, imageModel,
+    )
     generated.push(result)
   }
+
+  const failedCount  = generated.filter(v => v.status === 'failed').length
+  const successCount = generated.filter(v => v.status === 'generated').length
+  console.log('[visuals] generation_complete', { successCount, failedCount })
 
   // ── Persist ───────────────────────────────────────────────────────────────
 
@@ -272,7 +335,7 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
         document_id: documentId,
         user_id:     user.id,
         visuals:     generated,
-        model:       `${PROMPT_MODEL}+${IMAGE_MODEL}`,
+        model:       `${PROMPT_MODEL}+${imageModel}`,
       },
       { onConflict: 'document_id,user_id' },
     )

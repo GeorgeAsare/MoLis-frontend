@@ -238,7 +238,12 @@ function VisualCard({ visual }: { visual: StudyVisualItem }) {
         ) : visual.status === 'failed' ? (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <WarningIcon className="h-8 w-8 text-red-400/40" />
-            <p className="text-xs text-foreground/25">Image generation failed for this diagram</p>
+            <p className="text-xs text-foreground/25">Image generation failed</p>
+            {visual.failure_stage && (
+              <span className="rounded border border-red-500/15 bg-red-500/[0.06] px-2 py-0.5 text-[10px] font-mono text-red-400/50">
+                {visual.failure_stage}
+              </span>
+            )}
           </div>
         ) : (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
@@ -260,6 +265,12 @@ function VisualCard({ visual }: { visual: StudyVisualItem }) {
         </div>
         {visual.description && (
           <p className="text-xs leading-relaxed text-foreground/40">{visual.description}</p>
+        )}
+        {/* Dev-mode error detail — visible in browser console and on-card in dev */}
+        {visual.status === 'failed' && visual.error && (
+          <p className="text-[10px] font-mono leading-relaxed text-red-400/40 break-all">
+            {visual.failure_stage ? `[${visual.failure_stage}] ` : ''}{visual.error}
+          </p>
         )}
       </div>
     </div>
