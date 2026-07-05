@@ -1,10 +1,10 @@
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
 import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/components/animations'
 import { NeuralOrb } from '@/components/ui/NeuralOrb'
-import { getStudyDigest } from '@/app/actions/studyDigest'
-import type { WeakTopic } from '@/types/weakTopic'
+import { getDashboardIntelligence } from '@/app/actions/dashboardIntelligence'
+import { createClient } from '@/lib/supabase/server'
 import type { DigestActivity, DigestActivityType } from '@/types/studyDigest'
+import type { WeakConceptItem, WeakReason, RecommendedNextAction } from '@/types/dashboardIntelligence'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
@@ -17,62 +17,53 @@ export default async function DashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
 
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
+  const intel = await getDashboardIntelligence()
 
-  const [topWeakTopicsResult, digest] = await Promise.all([
-    user
-      ? supabase
-          .from('weak_topics')
-          .select('id, topic, weakness_score, last_seen, document_id')
-          .eq('user_id', user.id)
-          .order('weakness_score', { ascending: false })
-          .limit(3)
-      : Promise.resolve({ data: null }),
-    getStudyDigest(),
-  ])
-
-  const topWeakTopics = (topWeakTopicsResult.data as Pick<
-    WeakTopic,
-    'id' | 'topic' | 'weakness_score' | 'last_seen' | 'document_id'
-  >[] | null) ?? []
-
-  const docCount = digest?.document_count ?? 0
+  const totalDocs = intel?.total_documents ?? 0
+  const totalConcepts = intel?.total_concepts_tracked ?? 0
+  const weakCount = intel?.weak_concepts_count ?? 0
+  const reviewsDue = intel?.reviews_due_count ?? 0
 
   const statCards = [
     {
       href: '/dashboard/study',
       label: 'Study',
       description: 'Documents, notes, exam prep',
-      stat: String(docCount),
+      stat: String(totalDocs),
       statLabel: 'documents',
       accentText: 'text-primary',
       ringClass: 'border-primary/20 bg-primary/[0.08]',
       icon: StudyIcon,
     },
     {
-      href: '/dashboard/agents',
-      label: 'Agents',
-      description: 'Tasks, research, automation',
-      stat: '0',
-      statLabel: 'active tasks',
-      accentText: 'text-purple-400',
-      ringClass: 'border-purple-500/20 bg-primary/[0.08]',
-      icon: AgentsIcon,
-    },
-    {
-      href: '/dashboard/memory',
-      label: 'Memory',
-      description: 'What MoLis knows about you',
-      stat: '0',
-      statLabel: 'learned facts',
+      href: '/dashboard/study',
+      label: 'Learning',
+      description: totalConcepts > 0 ? `${weakCount} weak · ${totalConcepts} tracked` : 'Concept mastery tracking',
+      stat: String(totalConcepts),
+      statLabel: 'concepts',
       accentText: 'text-sky-400',
       ringClass: 'border-sky-500/20 bg-sky-500/[0.08]',
-      icon: MemoryIcon,
+      icon: ConceptsIcon,
+    },
+    {
+      href: '/dashboard/study',
+      label: 'Reviews',
+      description: reviewsDue > 0 ? 'Concepts overdue for review' : 'All reviews up to date',
+      stat: String(reviewsDue),
+      statLabel: reviewsDue === 1 ? 'due' : 'due',
+      accentText: reviewsDue > 0 ? 'text-amber-400' : 'text-emerald-400',
+      ringClass: reviewsDue > 0 ? 'border-amber-500/20 bg-amber-500/[0.07]' : 'border-emerald-500/20 bg-emerald-500/[0.07]',
+      icon: ReviewsIcon,
     },
   ]
 
   const hour = new Date().getHours()
   const greeting =
     hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+
+  const digest = intel?.digest
+  const topWeakConcepts = intel?.top_weak_concepts ?? []
+  const nextAction = intel?.recommended_next_action ?? null
 
   return (
     <div className="relative min-h-full w-full">
@@ -107,7 +98,9 @@ export default async function DashboardPage() {
               <span className="text-gradient-red">{name}</span>
             </h1>
             <p className="mt-1.5 text-sm text-foreground/32">
-              Your AI operating system is ready.
+              {intel?.overall_readiness_estimate
+                ? `Overall readiness: ${intel.overall_readiness_estimate}%`
+                : 'Your AI operating system is ready.'}
             </p>
           </header>
         </FadeIn>
@@ -121,7 +114,7 @@ export default async function DashboardPage() {
             {/* Stat cards */}
             <StaggerContainer className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {statCards.map(({ href, label, description, stat, statLabel, accentText, ringClass, icon: Icon }) => (
-                <StaggerItem key={href}>
+                <StaggerItem key={label}>
                   <HoverLift className="h-full" lift={-3} scale={1.01}>
                     <Link
                       href={href}
@@ -153,61 +146,50 @@ export default async function DashboardPage() {
               ))}
             </StaggerContainer>
 
+            {/* Recommended Next Action */}
+            {nextAction && (
+              <SlideUp delay={0.25}>
+                <NextActionCard action={nextAction} />
+              </SlideUp>
+            )}
+
             {/* Adaptive Learning */}
             <SlideUp delay={0.3}>
               <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="mb-4 flex items-start justify-between">
                   <div>
                     <p className="text-[13px] font-semibold text-foreground/75">Adaptive Learning</p>
-                    <p className="mt-0.5 text-xs text-foreground/38">Your weakest topics across all documents</p>
+                    <p className="mt-0.5 text-xs text-foreground/38">
+                      {topWeakConcepts.length > 0
+                        ? `${weakCount} weak concept${weakCount !== 1 ? 's' : ''} across all documents`
+                        : 'Your weakest topics across all documents'}
+                    </p>
                   </div>
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
                     <TargetIcon className="h-3.5 w-3.5 text-foreground/32" />
                   </div>
                 </div>
 
-                {topWeakTopics.length === 0 ? (
+                {topWeakConcepts.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center">
                     <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-muted/40">
                       <TargetIcon className="h-5 w-5 text-foreground/20" />
                     </div>
-                    <p className="text-sm text-foreground/40">No weak topics detected yet</p>
+                    <p className="text-sm text-foreground/40">No weak concepts detected yet</p>
                     <p className="mt-1 max-w-xs text-xs leading-relaxed text-foreground/25">
                       Complete a quiz to start adaptive tracking.
                     </p>
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    {topWeakTopics.map((wt) => {
-                      const score = wt.weakness_score
-                      const accent =
-                        score >= 4 ? 'text-red-400' : score >= 2 ? 'text-orange-400' : 'text-yellow-400/90'
-                      const badge =
-                        score >= 4
-                          ? 'border-red-500/20 bg-red-500/[0.07] text-red-400'
-                          : score >= 2
-                            ? 'border-orange-500/18 bg-orange-500/[0.06] text-orange-400'
-                            : 'border-yellow-500/18 bg-yellow-500/[0.06] text-yellow-400/90'
-                      const dot =
-                        score >= 4 ? 'bg-red-400/70' : score >= 2 ? 'bg-orange-400/70' : 'bg-yellow-400/60'
-                      return (
-                        <div
-                          key={wt.id}
-                          className="flex items-center gap-3 rounded-xl border border-border bg-muted/30 px-3.5 py-2.5"
-                        >
-                          <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-                          <span className={`flex-1 truncate text-sm font-medium ${accent}`}>{wt.topic}</span>
-                          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${badge}`}>
-                            ×{score}
-                          </span>
-                        </div>
-                      )
-                    })}
+                    {topWeakConcepts.map((wc) => (
+                      <WeakConceptRow key={wc.concept_id} item={wc} />
+                    ))}
                     <Link
                       href="/dashboard/study"
                       className="mt-1 text-right text-[11px] text-foreground/25 transition-colors hover:text-foreground/50"
                     >
-                      View study documents →
+                      View all study documents →
                     </Link>
                   </div>
                 )}
@@ -223,11 +205,15 @@ export default async function DashboardPage() {
               <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="mb-4 flex items-center justify-between">
                   <div>
-                    <p className="text-[13px] font-semibold text-foreground/75">Daily Digest</p>
+                    <p className="text-[13px] font-semibold text-foreground/75">
+                      {digest?.is_fallback ? 'Recent Activity' : 'Daily Digest'}
+                    </p>
                     <p className="mt-0.5 text-xs text-foreground/38">
-                      {digest?.concepts_reviewed_today
-                        ? `${digest.concepts_reviewed_today} concept${digest.concepts_reviewed_today !== 1 ? 's' : ''} reviewed today`
-                        : 'Activity & updates'}
+                      {digest?.is_fallback
+                        ? 'Past 7 days'
+                        : digest?.concepts_reviewed_today
+                          ? `${digest.concepts_reviewed_today} concept${digest.concepts_reviewed_today !== 1 ? 's' : ''} reviewed today`
+                          : 'Today\'s activity'}
                     </p>
                   </div>
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
@@ -240,7 +226,7 @@ export default async function DashboardPage() {
                     <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted/40">
                       <ClockIcon className="h-4 w-4 text-foreground/20" />
                     </div>
-                    <p className="text-sm text-foreground/38">No activity today</p>
+                    <p className="text-sm text-foreground/38">No recent activity</p>
                     <p className="mt-1 text-xs leading-relaxed text-foreground/22">
                       Study sessions appear here as you work.
                     </p>
@@ -267,7 +253,7 @@ export default async function DashboardPage() {
               </div>
             </SlideUp>
 
-            {/* Intelligence Panel */}
+            {/* Quick Launch */}
             <SlideUp delay={0.40}>
               <div className="rounded-2xl border border-border bg-card p-5">
                 <div className="mb-4 flex items-center justify-between">
@@ -311,7 +297,82 @@ export default async function DashboardPage() {
   )
 }
 
-// ── DigestItem ────────────────────────────────────────────────────────────
+// ── NextActionCard ────────────────────────────────────────────────────────────
+
+function NextActionCard({ action }: { action: RecommendedNextAction }) {
+  const href = `/dashboard/study/${action.document_id}?tab=${action.tab}`
+  return (
+    <div className="rounded-2xl border border-primary/25 bg-primary/[0.04] p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-primary/50">
+          Start here
+        </p>
+        <SparkleIcon className="h-3.5 w-3.5 text-primary/40" />
+      </div>
+      <p className="text-[15px] font-semibold leading-snug text-foreground/80">
+        {action.concept_title}
+      </p>
+      <p className="mt-0.5 truncate text-xs text-foreground/35">{action.document_title}</p>
+      <p className="mt-2 text-xs leading-relaxed text-foreground/40">{action.reason}</p>
+      <Link
+        href={href}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-primary/[0.08] px-3.5 py-2 text-[12px] font-semibold text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.14]"
+      >
+        {action.action_label}
+        <ArrowRightIcon className="h-3 w-3" />
+      </Link>
+    </div>
+  )
+}
+
+// ── WeakConceptRow ────────────────────────────────────────────────────────────
+
+const REASON_META: Record<WeakReason, { text: string; badge: string }> = {
+  low_mastery:     { text: 'Low mastery',    badge: 'border-red-500/20 bg-red-500/[0.07] text-red-400' },
+  forgetting_risk: { text: 'Forgetting risk', badge: 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400' },
+  recent_mistakes: { text: 'Recent mistakes', badge: 'border-orange-500/20 bg-orange-500/[0.07] text-orange-400' },
+}
+
+const MASTERY_DOT: (score: number) => string = (score) =>
+  score < 30 ? 'bg-red-400/70' : score < 50 ? 'bg-orange-400/70' : 'bg-yellow-400/60'
+
+const MASTERY_TEXT: (score: number) => string = (score) =>
+  score < 30 ? 'text-red-400' : score < 50 ? 'text-orange-400' : 'text-yellow-400/90'
+
+const MASTERY_BADGE: (score: number) => string = (score) =>
+  score < 30
+    ? 'border-red-500/20 bg-red-500/[0.07] text-red-400'
+    : score < 50
+      ? 'border-orange-500/18 bg-orange-500/[0.06] text-orange-400'
+      : 'border-yellow-500/18 bg-yellow-500/[0.06] text-yellow-400/90'
+
+function WeakConceptRow({ item }: { item: WeakConceptItem }) {
+  const reason = REASON_META[item.reason]
+  return (
+    <Link
+      href={item.href}
+      className="group flex items-start gap-3 rounded-xl border border-border bg-muted/30 px-3.5 py-3 transition-colors hover:border-border hover:bg-muted/50"
+    >
+      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${MASTERY_DOT(item.mastery_score)}`} />
+      <div className="min-w-0 flex-1">
+        <p className={`truncate text-sm font-medium ${MASTERY_TEXT(item.mastery_score)}`}>
+          {item.concept_title}
+        </p>
+        <p className="truncate text-[11px] text-foreground/28">{item.document_title}</p>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tabular-nums ${MASTERY_BADGE(item.mastery_score)}`}>
+          {item.mastery_score}%
+        </span>
+        <span className={`rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide ${reason.badge}`}>
+          {reason.text}
+        </span>
+      </div>
+    </Link>
+  )
+}
+
+// ── DigestItem ────────────────────────────────────────────────────────────────
 
 const DIGEST_META: Record<DigestActivityType, { label: string; dot: string }> = {
   quiz_completed:          { label: 'Quiz',       dot: 'bg-violet-400/70' },
@@ -343,12 +404,28 @@ function DigestItem({ activity }: { activity: DigestActivity }) {
   )
 }
 
-// ── Icons ─────────────────────────────────────────────────────────────────
+// ── Icons ─────────────────────────────────────────────────────────────────────
 
 function StudyIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+    </svg>
+  )
+}
+
+function ConceptsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5m.75-9 3-3 2.148 2.148A12.061 12.061 0 0 1 16.5 7.605" />
+    </svg>
+  )
+}
+
+function ReviewsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
     </svg>
   )
 }
@@ -373,6 +450,14 @@ function ArrowDiagIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" />
+    </svg>
+  )
+}
+
+function ArrowRightIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
     </svg>
   )
 }
@@ -405,6 +490,14 @@ function BoltIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" />
+    </svg>
+  )
+}
+
+function SparkleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
     </svg>
   )
 }
