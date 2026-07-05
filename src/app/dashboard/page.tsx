@@ -2,57 +2,13 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/components/animations'
 import { NeuralOrb } from '@/components/ui/NeuralOrb'
+import { getStudyDigest } from '@/app/actions/studyDigest'
 import type { WeakTopic } from '@/types/weakTopic'
+import type { DigestActivity, DigestActivityType } from '@/types/studyDigest'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
 }
-
-// ── Card config ───────────────────────────────────────────────────────────
-
-interface StatCard {
-  href: string
-  label: string
-  description: string
-  stat: string
-  statLabel: string
-  accentText: string
-  ringClass: string
-  icon: React.ComponentType<{ className?: string }>
-}
-
-const statCards: StatCard[] = [
-  {
-    href: '/dashboard/study',
-    label: 'Study',
-    description: 'Documents, notes, exam prep',
-    stat: '0',
-    statLabel: 'documents',
-    accentText: 'text-primary',
-    ringClass: 'border-primary/20 bg-primary/[0.08]',
-    icon: StudyIcon,
-  },
-  {
-    href: '/dashboard/agents',
-    label: 'Agents',
-    description: 'Tasks, research, automation',
-    stat: '0',
-    statLabel: 'active tasks',
-    accentText: 'text-purple-400',
-    ringClass: 'border-purple-500/20 bg-primary/[0.08]',
-    icon: AgentsIcon,
-  },
-  {
-    href: '/dashboard/memory',
-    label: 'Memory',
-    description: 'What MoLis knows about you',
-    stat: '0',
-    statLabel: 'learned facts',
-    accentText: 'text-sky-400',
-    ringClass: 'border-sky-500/20 bg-sky-500/[0.08]',
-    icon: MemoryIcon,
-  },
-]
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
@@ -62,19 +18,57 @@ export default async function DashboardPage() {
 
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
 
-  const { data: topWeakTopicsData } = user
-    ? await supabase
-        .from('weak_topics')
-        .select('id, topic, weakness_score, last_seen, document_id')
-        .eq('user_id', user.id)
-        .order('weakness_score', { ascending: false })
-        .limit(3)
-    : { data: null }
+  const [topWeakTopicsResult, digest] = await Promise.all([
+    user
+      ? supabase
+          .from('weak_topics')
+          .select('id, topic, weakness_score, last_seen, document_id')
+          .eq('user_id', user.id)
+          .order('weakness_score', { ascending: false })
+          .limit(3)
+      : Promise.resolve({ data: null }),
+    getStudyDigest(),
+  ])
 
-  const topWeakTopics = (topWeakTopicsData as Pick<
+  const topWeakTopics = (topWeakTopicsResult.data as Pick<
     WeakTopic,
     'id' | 'topic' | 'weakness_score' | 'last_seen' | 'document_id'
   >[] | null) ?? []
+
+  const docCount = digest?.document_count ?? 0
+
+  const statCards = [
+    {
+      href: '/dashboard/study',
+      label: 'Study',
+      description: 'Documents, notes, exam prep',
+      stat: String(docCount),
+      statLabel: 'documents',
+      accentText: 'text-primary',
+      ringClass: 'border-primary/20 bg-primary/[0.08]',
+      icon: StudyIcon,
+    },
+    {
+      href: '/dashboard/agents',
+      label: 'Agents',
+      description: 'Tasks, research, automation',
+      stat: '0',
+      statLabel: 'active tasks',
+      accentText: 'text-purple-400',
+      ringClass: 'border-purple-500/20 bg-primary/[0.08]',
+      icon: AgentsIcon,
+    },
+    {
+      href: '/dashboard/memory',
+      label: 'Memory',
+      description: 'What MoLis knows about you',
+      stat: '0',
+      statLabel: 'learned facts',
+      accentText: 'text-sky-400',
+      ringClass: 'border-sky-500/20 bg-sky-500/[0.08]',
+      icon: MemoryIcon,
+    },
+  ]
 
   const hour = new Date().getHours()
   const greeting =
@@ -230,22 +224,46 @@ export default async function DashboardPage() {
                 <div className="mb-4 flex items-center justify-between">
                   <div>
                     <p className="text-[13px] font-semibold text-foreground/75">Daily Digest</p>
-                    <p className="mt-0.5 text-xs text-foreground/38">Activity &amp; updates</p>
+                    <p className="mt-0.5 text-xs text-foreground/38">
+                      {digest?.concepts_reviewed_today
+                        ? `${digest.concepts_reviewed_today} concept${digest.concepts_reviewed_today !== 1 ? 's' : ''} reviewed today`
+                        : 'Activity & updates'}
+                    </p>
                   </div>
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
                     <DigestIcon className="h-3.5 w-3.5 text-foreground/32" />
                   </div>
                 </div>
 
-                <div className="flex flex-col items-center justify-center py-6 text-center">
-                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted/40">
-                    <ClockIcon className="h-4.5 w-4.5 text-foreground/20" />
+                {(!digest || digest.activities.length === 0) ? (
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted/40">
+                      <ClockIcon className="h-4 w-4 text-foreground/20" />
+                    </div>
+                    <p className="text-sm text-foreground/38">No activity today</p>
+                    <p className="mt-1 text-xs leading-relaxed text-foreground/22">
+                      Study sessions appear here as you work.
+                    </p>
+                    <Link
+                      href="/dashboard/study"
+                      className="mt-3 text-[11px] font-medium text-primary/60 transition-colors hover:text-primary"
+                    >
+                      Start studying →
+                    </Link>
                   </div>
-                  <p className="text-sm text-foreground/38">No activity yet</p>
-                  <p className="mt-1 text-xs leading-relaxed text-foreground/22">
-                    Sessions, tasks, and memory additions appear here.
-                  </p>
-                </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {digest.activities.map((activity, i) => (
+                      <DigestItem key={i} activity={activity} />
+                    ))}
+                    <Link
+                      href="/dashboard/study"
+                      className="mt-1 text-right text-[11px] text-foreground/25 transition-colors hover:text-foreground/50"
+                    >
+                      View all study sets →
+                    </Link>
+                  </div>
+                )}
               </div>
             </SlideUp>
 
@@ -290,6 +308,38 @@ export default async function DashboardPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── DigestItem ────────────────────────────────────────────────────────────
+
+const DIGEST_META: Record<DigestActivityType, { label: string; dot: string }> = {
+  quiz_completed:          { label: 'Quiz',       dot: 'bg-violet-400/70' },
+  quiz_in_progress:        { label: 'Quiz',       dot: 'bg-violet-400/40' },
+  flashcards_completed:    { label: 'Flashcards', dot: 'bg-sky-400/70' },
+  flashcards_in_progress:  { label: 'Flashcards', dot: 'bg-sky-400/40' },
+  tutor_session:           { label: 'AI Tutor',   dot: 'bg-primary/60' },
+  notes_generated:         { label: 'Notes',      dot: 'bg-emerald-400/70' },
+}
+
+function DigestItem({ activity }: { activity: DigestActivity }) {
+  const meta = DIGEST_META[activity.type]
+  return (
+    <Link
+      href={activity.href}
+      className="group flex items-start gap-2.5 rounded-xl border border-border bg-muted/25 px-3 py-2.5 transition-all duration-200 hover:border-border hover:bg-muted/50"
+    >
+      <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-[11px] font-semibold text-foreground/35 uppercase tracking-wide">{meta.label}</span>
+          <span className="truncate text-[12px] font-medium text-foreground/60 group-hover:text-foreground/80">
+            {activity.document_title}
+          </span>
+        </div>
+        <p className="text-[11px] text-foreground/30">{activity.detail}</p>
+      </div>
+    </Link>
   )
 }
 

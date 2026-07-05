@@ -185,6 +185,9 @@ export function StudySetView({
               weakTopicsCount={weakTopics.length}
               analysis={initialAnalysis}
               studyPlan={initialStudyPlan}
+              quizAttempt={initialQuizAttempt}
+              flashcardProgress={initialFlashcardProgress}
+              tutorMessageCount={initialTutorMessages.length}
               onNavigate={handleTabChange}
             />
           </div>
@@ -257,6 +260,9 @@ interface OverviewProps {
   weakTopicsCount: number
   analysis: DocumentAnalysis | null
   studyPlan: StudyPlan | null
+  quizAttempt: QuizAttempt | null
+  flashcardProgress: FlashcardProgress | null
+  tutorMessageCount: number
   onNavigate: (tab: Tab) => void
 }
 
@@ -270,6 +276,9 @@ function OverviewTab({
   weakTopicsCount,
   analysis,
   studyPlan,
+  quizAttempt,
+  flashcardProgress,
+  tutorMessageCount,
   onNavigate,
 }: OverviewProps) {
   const label = fileTypeLabel(doc.file_type)
@@ -437,6 +446,65 @@ function OverviewTab({
           })}
         </div>
       </div>
+
+      {/* Session at a glance */}
+      {(quizAttempt || flashcardProgress || tutorMessageCount > 0) && (
+        <div className="flex flex-col gap-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
+            Session Summary
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {quizAttempt && (
+              <button
+                onClick={() => onNavigate('quiz')}
+                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">Quiz</span>
+                {quizAttempt.phase === 'review' && quizAttempt.score_correct != null ? (
+                  <span className="text-sm font-semibold text-foreground/70">
+                    {quizAttempt.score_correct}/{quizAttempt.score_total}
+                    <span className="ml-1 text-xs font-normal text-foreground/35">correct</span>
+                  </span>
+                ) : (
+                  <span className="text-sm font-medium text-amber-400/80">In progress</span>
+                )}
+              </button>
+            )}
+            {flashcardProgress && (
+              <button
+                onClick={() => onNavigate('flashcards')}
+                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">Flashcards</span>
+                {(() => {
+                  const known = flashcardProgress.card_statuses.filter(s => s === 'known').length
+                  const total = flashcardProgress.card_statuses.length
+                  return (
+                    <span className="text-sm font-semibold text-foreground/70">
+                      {known}/{total}
+                      <span className="ml-1 text-xs font-normal text-foreground/35">known</span>
+                    </span>
+                  )
+                })()}
+              </button>
+            )}
+            {tutorMessageCount > 0 && (
+              <button
+                onClick={() => onNavigate('tutor')}
+                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">AI Tutor</span>
+                <span className="text-sm font-semibold text-foreground/70">
+                  {tutorMessageCount}
+                  <span className="ml-1 text-xs font-normal text-foreground/35">
+                    {tutorMessageCount === 1 ? 'message' : 'messages'}
+                  </span>
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Adaptive Study Plan */}
       {studyPlan && (
