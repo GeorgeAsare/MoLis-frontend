@@ -16,10 +16,31 @@ import type { DocumentAnalysis, LearningPathData } from '@/types/documentAnalysi
 import type { MistakePattern } from '@/types/conceptMastery'
 import type { ConceptIntelligence, DocumentIntelligence } from '@/types/studentIntelligence'
 import type { StudyPlan } from '@/types/studyPlan'
+import { getStudentKnowledgeTwin } from '@/app/actions/studentKnowledgeTwin'
+import type { StudentKnowledgeTwin } from '@/types/studentKnowledgeTwin'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const DOC_TEXT_LIMIT = 6_000
+
+const EMPTY_TWIN: StudentKnowledgeTwin = {
+  total_concepts_tracked: 0,
+  mastered_concepts_count: 0,
+  weak_concepts_count: 0,
+  average_mastery_score: null,
+  average_confidence_score: null,
+  strongest_concepts: [],
+  weakest_concepts: [],
+  recurring_weak_patterns: [],
+  concepts_due_for_review: 0,
+  forgetting_risk_summary: { high: 0, medium: 0, low: 0 },
+  learning_velocity_summary: null,
+  preferred_study_mode: null,
+  recommended_focus_area: null,
+  recommended_next_document: null,
+  overall_student_readiness: 0,
+  has_enough_data: false,
+}
 
 // ── Intent classification ─────────────────────────────────────────────────────
 
@@ -74,6 +95,7 @@ You have access to:
 • Their quiz results and exact wrong answers (RECENT MISTAKES section)
 • Their mastery score, forgetting risk, and learning velocity per concept
 • Their adaptive study plan and concept dependency graph
+• Their Student Knowledge Twin — a global learning profile across ALL documents, including overall readiness, recurring weak patterns, and preferred study mode (GLOBAL STUDENT KNOWLEDGE TWIN section, when available)
 
 DEFAULT TEACHING FORMAT (for explanations only):
 What happened: [1 sentence naming the concept or mistake]
@@ -85,6 +107,12 @@ Next step: [specific named action]
 
 IMPORTANT: Each request includes a MODE/FORMAT instruction. That instruction OVERRIDES this default format. Always follow the specific format given in the MODE instruction.
 
+Priority order for context:
+1. Current document content and analysis
+2. Current document concept mastery and quiz mistakes
+3. Current document study plan
+4. GLOBAL STUDENT KNOWLEDGE TWIN (supplementary personalisation — use it, don't lead with it)
+
 Rules:
 • Ground answers in the provided document material
 • Use RECENT MISTAKES data when available — name the exact concept and wrong answer
@@ -93,6 +121,8 @@ Rules:
 • Do not repeat the question back or pad with filler
 • For code: use fenced blocks with language tag on the same line as the backticks — e.g. \`\`\`python followed immediately by a newline then code then \`\`\` on its own line. Keep examples under 20 lines.
 • Use DEPENDENCY DATA when available (e.g. "Inheritance requires understanding Classes first — your Classes mastery is 40%")
+• Use GLOBAL STUDENT KNOWLEDGE TWIN to personalise: adapt explanation style, connect mistakes to cross-document patterns, mention review pressure when relevant
+• Never say "your Knowledge Twin says" or "your global profile shows" — weave twin data naturally (e.g. "you've been struggling with X across your documents", "since you prefer step-by-step explanations…")
 
 ACTION LINE — include this whenever your response ends with a recommendation to open a tab or do something specific:
 ACTION: <type> | <concept_title_or_blank> | <label>
@@ -563,6 +593,80 @@ function appendGeneral(
     lines.push(`  - ${b.concept_title} (${b.block_type}, ${b.estimated_minutes}min): ${b.reason}`)
 }
 
+// ── Global twin context builder ───────────────────────────────────────────────
+
+function buildTwinContext(twin: StudentKnowledgeTwin, intent: TutorIntent): string {
+  if (!twin.has_enough_data) return ''
+
+  const lines: string[] = ['GLOBAL STUDENT KNOWLEDGE TWIN (cross-document learning profile):']
+
+  lines.push(`• Overall readiness: ${twin.overall_student_readiness}% across ${twin.total_concepts_tracked} concept${twin.total_concepts_tracked !== 1 ? 's' : ''}`)
+
+  if (twin.strongest_concepts.length > 0) {
+    const s = twin.strongest_concepts[0]
+    lines.push(`• Strongest area: "${s.concept_title}" — ${s.mastery_score}% mastery (${s.document_title})`)
+  }
+
+  if (twin.recurring_weak_patterns.length > 0) {
+    const w = twin.recurring_weak_patterns[0]
+    lines.push(`• Weakest recurring pattern: "${w.pattern}" — ${w.frequency} mistake${w.frequency !== 1 ? 's' : ''} across documents`)
+  }
+
+  if (twin.weakest_concepts.length > 0) {
+    lines.push('• Top weak concepts across all documents:')
+    for (const c of twin.weakest_concepts)
+      lines.push(`  - "${c.concept_title}": ${c.mastery_score}% mastery (${c.document_title})${c.forgetting_risk !== 'low' ? ` [${c.forgetting_risk} forgetting risk]` : ''}`)
+  }
+
+  if (twin.concepts_due_for_review > 0)
+    lines.push(`• Review pressure: ${twin.concepts_due_for_review} concept${twin.concepts_due_for_review !== 1 ? 's' : ''} overdue for review across all documents`)
+
+  if (twin.learning_velocity_summary)
+    lines.push(`• Learning velocity: ${twin.learning_velocity_summary}`)
+
+  if (twin.preferred_study_mode)
+    lines.push(`• Preferred study mode: ${twin.preferred_study_mode}`)
+
+  if (twin.recommended_focus_area) {
+    const f = twin.recommended_focus_area
+    const docNote = f.document_title ? ` (from ${f.document_title})` : ''
+    lines.push(`• Recommended global focus: "${f.focus_area}" — ${f.rationale}${docNote}`)
+  }
+
+  // Intent-specific guidance — tell the model how to use twin data for this request
+  lines.push('')
+  switch (intent) {
+    case 'next_action':
+      lines.push('TWIN GUIDANCE for this next-step request: if global review pressure is high or the recommended focus overlaps with this document, mention it. Suggest visiting the relevant document if the top focus area is in a different document.')
+      break
+    case 'mistake_debug':
+      lines.push('TWIN GUIDANCE for this mistake question: if the mistake pattern matches the globally recurring weak pattern, note it naturally (e.g. "this seems to be a recurring area across your studying").')
+      break
+    case 'prerequisite_gap':
+      lines.push('TWIN GUIDANCE for this prerequisite question: if the missing foundation appears as a globally weak concept, briefly mention the broader pattern.')
+      break
+    case 'concept_explain':
+      if (twin.preferred_study_mode)
+        lines.push(`TWIN GUIDANCE for this explanation: student prefers "${twin.preferred_study_mode}" mode — adapt explanation style accordingly (e.g. if Simplify, use analogies; if Exam Prep, highlight key terms and traps).`)
+      break
+    case 'practice':
+      {
+        const hints: string[] = []
+        if (twin.recurring_weak_patterns.length > 0)
+          hints.push(`recurring mistakes on "${twin.recurring_weak_patterns[0].pattern}"`)
+        if (twin.preferred_study_mode)
+          hints.push(`preferred mode is ${twin.preferred_study_mode}`)
+        if (hints.length > 0)
+          lines.push(`TWIN GUIDANCE for this practice request: student has ${hints.join(' and ')}. Let this shape the difficulty and style of practice questions.`)
+      }
+      break
+    default:
+      break
+  }
+
+  return lines.join('\n')
+}
+
 // ── Main context dispatcher ───────────────────────────────────────────────────
 
 function buildContext(
@@ -700,9 +804,9 @@ export async function askTutor({
 
   const intent = classifyIntent(question, mode)
 
-  // Drop the separate mastery query — intelligence.concepts has all mastery fields
-  // including mistake_patterns, forgetting_risk, dependency data, and predictive scores
-  const [docResult, analysisResult, intelligence, plan] = await Promise.all([
+  // Fetch document data, intelligence, study plan, and global knowledge twin in parallel.
+  // Twin uses .catch() so a failure there never blocks the primary tutor response.
+  const [docResult, analysisResult, intelligence, plan, twin] = await Promise.all([
     supabase
       .from('documents')
       .select('user_id, title, extracted_text')
@@ -716,6 +820,7 @@ export async function askTutor({
       .maybeSingle(),
     getStudentIntelligence(documentId),
     getStudyPlan(documentId),
+    getStudentKnowledgeTwin().catch(() => EMPTY_TWIN),
   ])
 
   if (!docResult.data || docResult.data.user_id !== user.id) {
@@ -737,7 +842,10 @@ export async function askTutor({
     learningPath,
   )
 
-  const systemMessage = `${SYSTEM_PROMPT}\n\n${context}`
+  const twinContext = buildTwinContext(twin, intent)
+  const systemMessage = twinContext
+    ? `${SYSTEM_PROMPT}\n\n${context}\n\n${twinContext}`
+    : `${SYSTEM_PROMPT}\n\n${context}`
 
   // Last 6 messages = 3 turns of conversation context
   const history = recentMessages.slice(-6).map(m => ({
