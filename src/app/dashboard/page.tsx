@@ -2,9 +2,11 @@ import Link from 'next/link'
 import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/components/animations'
 import { NeuralOrb } from '@/components/ui/NeuralOrb'
 import { getDashboardIntelligence } from '@/app/actions/dashboardIntelligence'
+import { getStudentKnowledgeTwin } from '@/app/actions/studentKnowledgeTwin'
 import { createClient } from '@/lib/supabase/server'
 import type { DigestActivity, DigestActivityType } from '@/types/studyDigest'
 import type { WeakConceptItem, WeakReason, RecommendedNextAction } from '@/types/dashboardIntelligence'
+import type { StudentKnowledgeTwin } from '@/types/studentKnowledgeTwin'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
@@ -17,7 +19,10 @@ export default async function DashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
 
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
-  const intel = await getDashboardIntelligence()
+  const [intel, twin] = await Promise.all([
+    getDashboardIntelligence(),
+    getStudentKnowledgeTwin(),
+  ])
 
   const totalDocs = intel?.total_documents ?? 0
   const totalConcepts = intel?.total_concepts_tracked ?? 0
@@ -152,6 +157,11 @@ export default async function DashboardPage() {
                 <NextActionCard action={nextAction} />
               </SlideUp>
             )}
+
+            {/* Student Knowledge Twin */}
+            <SlideUp delay={0.28}>
+              <KnowledgeTwinCard twin={twin} />
+            </SlideUp>
 
             {/* Adaptive Learning */}
             <SlideUp delay={0.3}>
@@ -292,6 +302,164 @@ export default async function DashboardPage() {
             </SlideUp>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── KnowledgeTwinCard ─────────────────────────────────────────────────────────
+
+function KnowledgeTwinCard({ twin }: { twin: StudentKnowledgeTwin }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className="mb-4 flex items-start justify-between">
+        <div>
+          <p className="text-[13px] font-semibold text-foreground/75">Student Knowledge Twin</p>
+          <p className="mt-0.5 text-xs text-foreground/38">
+            {twin.has_enough_data ? 'Your global learning profile' : 'MoLis is learning your study patterns'}
+          </p>
+        </div>
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50">
+          <TwinIcon className="h-3.5 w-3.5 text-foreground/32" />
+        </div>
+      </div>
+
+      {!twin.has_enough_data ? (
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-muted/40">
+            <TwinIcon className="h-5 w-5 text-foreground/20" />
+          </div>
+          <p className="text-sm text-foreground/40">No profile data yet</p>
+          <p className="mt-1 max-w-xs text-xs leading-relaxed text-foreground/25">
+            Complete a quiz, review flashcards, or use the AI Tutor to build your knowledge profile.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+
+          {/* Overall readiness bar */}
+          <div className="rounded-xl border border-border bg-muted/25 px-3.5 py-2.5">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-foreground/40">Overall readiness</p>
+              <span className={`text-sm font-semibold tabular-nums ${
+                twin.overall_student_readiness >= 70 ? 'text-emerald-400'
+                : twin.overall_student_readiness >= 40 ? 'text-amber-400'
+                : 'text-red-400'
+              }`}>
+                {twin.overall_student_readiness}%
+              </span>
+            </div>
+            <div className="mt-1.5 h-1 rounded-full bg-muted/60 overflow-hidden">
+              <div
+                className={`h-1 rounded-full ${
+                  twin.overall_student_readiness >= 70 ? 'bg-emerald-400/60'
+                  : twin.overall_student_readiness >= 40 ? 'bg-amber-400/60'
+                  : 'bg-red-400/60'
+                }`}
+                style={{ width: `${twin.overall_student_readiness}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Data rows */}
+          <div className="flex flex-col gap-1">
+
+            {twin.strongest_concepts.length > 0 && (
+              <TwinRow
+                label="Strongest area"
+                value={twin.strongest_concepts[0].concept_title}
+                sub={twin.strongest_concepts[0].document_title}
+                accent="text-emerald-400/90"
+              />
+            )}
+
+            {(twin.recurring_weak_patterns.length > 0 || twin.weakest_concepts.length > 0) && (
+              <TwinRow
+                label="Weakest pattern"
+                value={
+                  twin.recurring_weak_patterns.length > 0
+                    ? twin.recurring_weak_patterns[0].pattern
+                    : twin.weakest_concepts[0].concept_title
+                }
+                sub={
+                  twin.recurring_weak_patterns.length > 0
+                    ? `${twin.recurring_weak_patterns[0].frequency} mistake${twin.recurring_weak_patterns[0].frequency !== 1 ? 's' : ''}`
+                    : twin.weakest_concepts[0].document_title
+                }
+                accent="text-red-400/80"
+              />
+            )}
+
+            {twin.concepts_due_for_review > 0 && (
+              <TwinRow
+                label="Review pressure"
+                value={`${twin.concepts_due_for_review} concept${twin.concepts_due_for_review !== 1 ? 's' : ''} due`}
+                accent={twin.concepts_due_for_review > 5 ? 'text-amber-400' : 'text-foreground/55'}
+              />
+            )}
+
+            {twin.learning_velocity_summary && (
+              <TwinRow
+                label="Learning velocity"
+                value={twin.learning_velocity_summary}
+                accent="text-foreground/50"
+              />
+            )}
+
+            {twin.preferred_study_mode && (
+              <TwinRow
+                label="Preferred mode"
+                value={twin.preferred_study_mode}
+                accent="text-foreground/50"
+              />
+            )}
+
+          </div>
+
+          {/* Recommended focus */}
+          {twin.recommended_focus_area && (
+            <Link
+              href={twin.recommended_focus_area.href ?? '/dashboard/study'}
+              className="group flex items-start gap-3 rounded-xl border border-primary/18 bg-primary/[0.04] px-3.5 py-3 transition-colors hover:border-primary/30 hover:bg-primary/[0.08]"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25">
+                  Recommended focus
+                </p>
+                <p className="mt-0.5 truncate text-sm font-medium text-foreground/72">
+                  {twin.recommended_focus_area.focus_area}
+                </p>
+                <p className="truncate text-[11px] text-foreground/35">
+                  {twin.recommended_focus_area.rationale}
+                </p>
+              </div>
+              <ArrowRightIcon className="mt-1 h-3 w-3 shrink-0 text-foreground/20 transition-colors group-hover:text-primary/60" />
+            </Link>
+          )}
+
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TwinRow({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string
+  value: string
+  sub?: string
+  accent: string
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg px-1 py-1">
+      <span className="shrink-0 text-[11px] text-foreground/30">{label}</span>
+      <div className="min-w-0 text-right">
+        <p className={`truncate text-[12px] font-medium ${accent}`}>{value}</p>
+        {sub && <p className="truncate text-[10px] text-foreground/22">{sub}</p>}
       </div>
     </div>
   )
@@ -498,6 +666,14 @@ function SparkleIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
+    </svg>
+  )
+}
+
+function TwinIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17.982 18.725A7.488 7.488 0 0 0 12 15.75a7.488 7.488 0 0 0-5.982 2.975m11.963 0a9 9 0 1 0-11.963 0m11.963 0A8.966 8.966 0 0 1 12 21a8.966 8.966 0 0 1-5.982-2.275M15 9.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
     </svg>
   )
 }
