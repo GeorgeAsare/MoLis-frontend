@@ -127,7 +127,7 @@ export function StudySetView({
   const hasExtractedText = !!doc.extracted_text
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex flex-1 flex-col min-h-0">
 
       {/* ── Breadcrumb ──────────────────────────────────────────────────────── */}
       <nav className="flex shrink-0 items-center gap-2 border-b border-border px-6 py-3.5">

@@ -156,7 +156,7 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
 
       {/* Mode selector */}
       <div className="shrink-0 mb-3 flex flex-col gap-1.5">
