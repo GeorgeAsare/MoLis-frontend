@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { ExtractionPanel } from '@/components/study/ExtractionPanel'
 import { RevisionNotesPanel } from '@/components/study/RevisionNotesPanel'
@@ -9,6 +9,7 @@ import { FlashcardsPanel } from '@/components/study/FlashcardsPanel'
 import { VisualsPanel } from '@/components/study/VisualsPanel'
 import { StudyPlanCard } from '@/components/study/StudyPlanCard'
 import { TutorPanel } from '@/components/study/TutorPanel'
+import type { TutorPanelHandle } from '@/components/study/TutorPanel'
 // WeakTopicsPanel is rendered inline in WeakTopicsTab below, not as a standalone component
 import type { RevisionNote } from '@/types/revisionNotes'
 import type { Quiz } from '@/types/quiz'
@@ -19,7 +20,7 @@ import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { StudyPlan } from '@/types/studyPlan'
 import type { FlashcardProgress } from '@/types/flashcardProgress'
 import type { QuizAttempt } from '@/types/quizAttempt'
-import type { TutorMessage } from '@/types/tutor'
+import type { TutorMessage, TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,7 @@ export function StudySetView({
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>(validateTab(initialTab))
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const tutorPanelRef = useRef<TutorPanelHandle>(null)
 
   function handleTabChange(tab: Tab) {
     setActiveTab(tab)
@@ -111,6 +113,15 @@ export function StudySetView({
     const url = new URL(window.location.href)
     url.searchParams.set('tab', tab)
     window.history.replaceState({}, '', url.toString())
+  }
+
+  function openTutorWithPrompt(prompt: string, mode?: TutorMode) {
+    // Switch tab without resetting scroll — prefill() handles scroll to composer
+    setActiveTab('tutor')
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', 'tutor')
+    window.history.replaceState({}, '', url.toString())
+    tutorPanelRef.current?.prefill(prompt, mode)
   }
 
   const hasExtractedText = !!doc.extracted_text
@@ -170,9 +181,14 @@ export function StudySetView({
 
       {/* ── Tab content ─────────────────────────────────────────────────────── */}
       {/* All panels stay mounted (display:none when inactive) so state is
-          preserved across tab switches — quiz progress, tutor messages, etc. */}
-      <div className="flex-1 overflow-y-auto" ref={scrollContainerRef}>
-        <div className="mx-auto max-w-3xl px-6 py-8">
+          preserved across tab switches — quiz progress, tutor messages, etc.
+          Tutor tab uses overflow-hidden + flex-col so TutorPanel owns its
+          internal scroll; other tabs use normal page scroll. */}
+      <div
+        className={`flex-1 min-h-0 ${activeTab === 'tutor' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'}`}
+        ref={scrollContainerRef}
+      >
+        <div className={`mx-auto max-w-3xl px-6 ${activeTab === 'tutor' ? 'flex-1 min-h-0 flex flex-col' : 'py-8'}`}>
 
           <div className={activeTab !== 'overview' ? 'hidden' : ''}>
             <OverviewTab
@@ -189,6 +205,7 @@ export function StudySetView({
               flashcardProgress={initialFlashcardProgress}
               tutorMessageCount={initialTutorMessages.length}
               onNavigate={handleTabChange}
+              onAskTutor={openTutorWithPrompt}
             />
           </div>
 
@@ -208,6 +225,7 @@ export function StudySetView({
               initialFlashcards={initialFlashcards}
               initialProgress={initialFlashcardProgress}
               analysis={initialAnalysis}
+              onAskTutor={openTutorWithPrompt}
             />
           </div>
 
@@ -218,6 +236,7 @@ export function StudySetView({
               initialQuiz={initialQuiz}
               initialAttempt={initialQuizAttempt}
               analysis={initialAnalysis}
+              onAskTutor={openTutorWithPrompt}
             />
           </div>
 
@@ -227,15 +246,17 @@ export function StudySetView({
               hasExtractedText={hasExtractedText}
               initialVisuals={initialVisuals}
               analysis={initialAnalysis}
+              onAskTutor={openTutorWithPrompt}
             />
           </div>
 
           <div className={activeTab !== 'weak-topics' ? 'hidden' : ''}>
-            <WeakTopicsTab weakTopics={weakTopics} onGoToQuiz={() => handleTabChange('quiz')} />
+            <WeakTopicsTab weakTopics={weakTopics} onGoToQuiz={() => handleTabChange('quiz')} onAskTutor={openTutorWithPrompt} />
           </div>
 
-          <div className={activeTab !== 'tutor' ? 'hidden' : ''}>
+          <div className={activeTab !== 'tutor' ? 'hidden' : 'flex-1 min-h-0 flex flex-col pt-4'}>
             <TutorPanel
+              ref={tutorPanelRef}
               documentId={doc.id}
               initialMessages={initialTutorMessages}
               onAction={(tab) => handleTabChange(tab as Tab)}
@@ -264,6 +285,7 @@ interface OverviewProps {
   flashcardProgress: FlashcardProgress | null
   tutorMessageCount: number
   onNavigate: (tab: Tab) => void
+  onAskTutor: (prompt: string, mode?: TutorMode) => void
 }
 
 function OverviewTab({
@@ -280,6 +302,7 @@ function OverviewTab({
   flashcardProgress,
   tutorMessageCount,
   onNavigate,
+  onAskTutor,
 }: OverviewProps) {
   const label = fileTypeLabel(doc.file_type)
   const date = formatDate(doc.created_at)
@@ -515,6 +538,7 @@ function OverviewTab({
           <StudyPlanCard
             plan={studyPlan}
             onNavigate={(tab) => onNavigate(tab as Tab)}
+            onAskTutor={onAskTutor}
           />
         </div>
       )}
@@ -548,9 +572,11 @@ function OverviewTab({
 function WeakTopicsTab({
   weakTopics,
   onGoToQuiz,
+  onAskTutor,
 }: {
   weakTopics: ConceptMastery[]
   onGoToQuiz: () => void
+  onAskTutor: (prompt: string, mode?: TutorMode) => void
 }) {
   const sorted = [...weakTopics].sort((a, b) => a.mastery_score - b.mastery_score)
 
@@ -621,11 +647,19 @@ function WeakTopicsTab({
                 {cm.incorrect_count === 1 ? 'miss' : 'misses'}
               </p>
             </div>
-            <span
-              className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${masteryStyle(cm.mastery_score)}`}
-            >
-              {cm.mastery_score}%
-            </span>
+            <div className="flex shrink-0 flex-col items-end gap-1.5">
+              <span
+                className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${masteryStyle(cm.mastery_score)}`}
+              >
+                {cm.mastery_score}%
+              </span>
+              <button
+                onClick={() => onAskTutor(`Explain why I'm weak in "${cm.concept_title}" and help me fix it.`, 'weak_topic')}
+                className="rounded-md border border-primary/20 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-medium text-primary/70 transition-colors hover:border-primary/35 hover:bg-primary/[0.11]"
+              >
+                Ask Tutor
+              </button>
+            </div>
           </div>
         ))}
       </div>

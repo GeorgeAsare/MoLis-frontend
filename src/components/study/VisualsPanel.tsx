@@ -5,6 +5,7 @@ import { generateVisuals } from '@/app/actions/visuals'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
+import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -15,11 +16,12 @@ interface Props {
   hasExtractedText: boolean
   initialVisuals: StudyVisualSet | null
   analysis?: DocumentAnalysis | null
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
 
 // ── VisualsPanel ──────────────────────────────────────────────────────────────
 
-export function VisualsPanel({ documentId, hasExtractedText, initialVisuals }: Props) {
+export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onAskTutor }: Props) {
   const [phase, setPhase]         = useState<Phase>(initialVisuals ? 'done' : 'idle')
   const [visuals, setVisuals]     = useState<StudyVisualSet | null>(initialVisuals)
   const [errorMessage, setError]  = useState<string | null>(null)
@@ -92,7 +94,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals }: P
       {phase === 'done' && visuals && (
         visuals.visuals.length === 0
           ? <NoVisualsState onRegenerate={triggerGenerate} />
-          : <VisualsGrid visuals={visuals.visuals} onRegenerate={triggerGenerate} />
+          : <VisualsGrid visuals={visuals.visuals} onRegenerate={triggerGenerate} onAskTutor={onAskTutor} />
       )}
     </div>
   )
@@ -193,16 +195,18 @@ function GeneratingSkeleton() {
 function VisualsGrid({
   visuals,
   onRegenerate,
+  onAskTutor,
 }: {
   visuals: StudyVisualItem[]
   onRegenerate: () => void
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
   const anyFailed = visuals.some(v => v.status === 'failed')
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {visuals.map((visual, i) => (
-          <VisualCard key={i} visual={visual} />
+          <VisualCard key={i} visual={visual} onAskTutor={onAskTutor} />
         ))}
       </div>
       {anyFailed && (
@@ -223,7 +227,7 @@ function VisualsGrid({
 
 // ── VisualCard ────────────────────────────────────────────────────────────────
 
-function VisualCard({ visual }: { visual: StudyVisualItem }) {
+function VisualCard({ visual, onAskTutor }: { visual: StudyVisualItem; onAskTutor?: (prompt: string, mode?: TutorMode) => void }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
       {/* Image area */}
@@ -271,6 +275,17 @@ function VisualCard({ visual }: { visual: StudyVisualItem }) {
           <p className="text-[10px] font-mono leading-relaxed text-red-400/40 break-all">
             {visual.failure_stage ? `[${visual.failure_stage}] ` : ''}{visual.error}
           </p>
+        )}
+        {visual.status === 'generated' && onAskTutor && (
+          <button
+            onClick={() => onAskTutor(
+              `Explain this visual: "${visual.topic}". Description: "${visual.description ?? visual.topic}"`,
+              'explain',
+            )}
+            className="mt-1 w-fit rounded-md border border-primary/18 bg-primary/[0.05] px-2.5 py-1 text-[11px] font-medium text-primary/65 transition-colors hover:border-primary/30 hover:bg-primary/[0.10]"
+          >
+            Ask Tutor to explain this
+          </button>
         )}
       </div>
     </div>

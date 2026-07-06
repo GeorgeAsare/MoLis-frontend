@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useImperativeHandle } from 'react'
 import { askTutor } from '@/app/actions/tutor'
 import { gradeCheckAnswer } from '@/app/actions/gradeCheckAnswer'
 import { appendTutorMessage, clearTutorMessages } from '@/app/actions/tutorMessages'
@@ -35,8 +35,6 @@ const SUGGESTED_PROMPTS: { label: string; text: string; mode: TutorMode }[] = [
   { label: 'Missing prerequisite?',   text: 'What prerequisite concept am I missing?',          mode: 'weak_topic' },
 ]
 
-// ── Props ─────────────────────────────────────────────────────────────────────
-
 // Maps action type to the tab name expected by StudySetView
 const ACTION_TAB: Record<string, string> = {
   open_notes:       'notes',
@@ -47,15 +45,20 @@ const ACTION_TAB: Record<string, string> = {
   continue_tutor:   'tutor',
 }
 
+export interface TutorPanelHandle {
+  prefill: (text: string, mode?: TutorMode) => void
+}
+
 interface Props {
   documentId: string
   initialMessages?: TutorMessage[]
   onAction?: (tab: string) => void
+  ref?: React.Ref<TutorPanelHandle>
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function TutorPanel({ documentId, initialMessages = [], onAction }: Props) {
+export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: Props) {
   const [messages, setMessages]         = useState<TutorMessage[]>(initialMessages)
   const [input, setInput]               = useState('')
   const [mode, setMode]                 = useState<TutorMode>('explain')
@@ -63,13 +66,32 @@ export function TutorPanel({ documentId, initialMessages = [], onAction }: Props
   const [error, setError]               = useState<string | null>(null)
   const [pendingCheck, setPendingCheck] = useState<CheckMeta | null>(null)
   const [masteryBanner, setMasteryBanner] = useState<{ correct: boolean; concept_title: string; brief_feedback: string } | null>(null)
-  const bottomRef                       = useRef<HTMLDivElement>(null)
-  const textareaRef                     = useRef<HTMLTextAreaElement>(null)
-  const bannerTimer                     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const messagesScrollRef = useRef<HTMLDivElement>(null)
+  const textareaRef       = useRef<HTMLTextAreaElement>(null)
+  const bannerTimer       = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Expose prefill() so StudySetView can route here from other panels
+  useImperativeHandle(ref, () => ({
+    prefill(text, m) {
+      setInput(text)
+      if (m) setMode(m)
+      // Wait for React to commit the state before moving focus/cursor/scroll
+      requestAnimationFrame(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus()
+          textareaRef.current.setSelectionRange(text.length, text.length)
+        }
+        const el = messagesScrollRef.current
+        if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      })
+    },
+  }))
+
+  // Scroll internal messages area to bottom on new messages / loading / pending check changes
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+    const el = messagesScrollRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [messages, loading, pendingCheck])
 
   async function send(overrideText?: string, overrideMode?: TutorMode) {
     const q = (overrideText ?? input).trim()
@@ -83,7 +105,6 @@ export function TutorPanel({ documentId, initialMessages = [], onAction }: Props
     setMessages(prev => [...prev, userMsg])
     setLoading(true)
 
-    // Snapshot current pending check — do NOT clear it yet; restore if student asked a follow-up
     const checkToGrade = pendingCheck
     const lastTutorMsg = messages.findLast(msg => msg.role === 'assistant')?.content ?? ''
 
@@ -106,8 +127,6 @@ export function TutorPanel({ documentId, initialMessages = [], onAction }: Props
       appendTutorMessage(documentId, { role: 'user', content: q, mode: m }).catch(() => {})
       appendTutorMessage(documentId, { role: 'assistant', content: res.answer, mode: res.mode }).catch(() => {})
 
-      // If graded: check was answered, consume it (use new check from response if any)
-      // If not graded: student asked a follow-up, restore old check (unless response added a newer one)
       setPendingCheck(res.checkMeta ?? (gradeResult ? null : checkToGrade))
 
       if (gradeResult) {
@@ -137,10 +156,10 @@ export function TutorPanel({ documentId, initialMessages = [], onAction }: Props
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col flex-1 min-h-0">
 
-      {/* Mode selector + personalised badge */}
-      <div className="flex flex-col gap-1.5">
+      {/* Mode selector */}
+      <div className="shrink-0 mb-3 flex flex-col gap-1.5">
         <div className="flex flex-wrap gap-1.5">
           {MODES.map(m => (
             <button
@@ -163,95 +182,104 @@ export function TutorPanel({ documentId, initialMessages = [], onAction }: Props
         </p>
       </div>
 
-      {/* Messages or empty state */}
-      {messages.length === 0 && !loading ? (
-        <EmptyState onSuggest={handleSuggest} />
-      ) : (
-        <div className="flex flex-col gap-4">
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} msg={msg} onAction={onAction} />
-          ))}
-          {loading && <ThinkingBubble />}
-          <div ref={bottomRef} />
-        </div>
-      )}
-
-      {/* Error */}
-      {error && (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/[0.07] px-4 py-3 text-xs leading-relaxed text-red-400">
-          {error}
-        </div>
-      )}
-
-      {/* Pending check indicator */}
-      {pendingCheck && !loading && (
-        <div className="flex items-center gap-2 rounded-xl border border-primary/15 bg-primary/[0.05] px-3.5 py-2 text-xs">
-          <span className="shrink-0 text-foreground/35">Check question pending:</span>
-          <span className="truncate font-medium text-primary/80">{pendingCheck.concept_title}</span>
-          <button
-            onClick={() => setPendingCheck(null)}
-            className="ml-auto shrink-0 text-foreground/25 transition-colors hover:text-foreground/50"
-          >
-            Skip
-          </button>
-        </div>
-      )}
-
-      {/* Mastery update banner */}
-      {masteryBanner && (
-        <div className={[
-          'rounded-xl border px-4 py-2.5 text-xs leading-relaxed transition-all',
-          masteryBanner.correct
-            ? 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400'
-            : 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400',
-        ].join(' ')}>
-          <span className="font-semibold">
-            {masteryBanner.correct ? 'Mastery updated ✓' : 'Mastery updated'}
-          </span>
-          {' · '}
-          <span className="opacity-80">{masteryBanner.concept_title}</span>
-          {masteryBanner.brief_feedback && (
-            <span className="opacity-60"> · {masteryBanner.brief_feedback}</span>
-          )}
-        </div>
-      )}
-
-      {/* Input row */}
-      <div className="flex gap-2 items-end">
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          rows={2}
-          disabled={loading}
-          placeholder="Ask anything about your document… (Enter to send, Shift+Enter for newline)"
-          className="flex-1 resize-none rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/22 focus:border-foreground/22 focus:outline-none focus:ring-1 focus:ring-foreground/12 disabled:opacity-50"
-        />
-        <button
-          onClick={() => send()}
-          disabled={!input.trim() || loading}
-          className="shrink-0 rounded-xl border border-primary/25 bg-primary/[0.08] px-4 py-2.5 text-sm font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.14] disabled:cursor-not-allowed disabled:opacity-35"
-        >
-          Ask
-        </button>
+      {/* Messages / empty state — internal scroll container */}
+      <div
+        ref={messagesScrollRef}
+        className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-4 pb-4"
+      >
+        {messages.length === 0 && !loading ? (
+          <EmptyState onSuggest={handleSuggest} />
+        ) : (
+          <>
+            {messages.map((msg, i) => (
+              <MessageBubble key={i} msg={msg} onAction={onAction} />
+            ))}
+            {loading && <ThinkingBubble />}
+          </>
+        )}
       </div>
 
-      {/* Clear */}
-      {messages.length > 0 && (
-        <button
-          onClick={() => {
-            setMessages([])
-            setPendingCheck(null)
-            setMasteryBanner(null)
-            if (bannerTimer.current) clearTimeout(bannerTimer.current)
-            clearTutorMessages(documentId).catch(() => {})
-          }}
-          className="self-start text-[11px] text-foreground/22 transition-colors hover:text-foreground/45"
-        >
-          Clear conversation
-        </button>
-      )}
+      {/* Composer — shrink-0 so it stays anchored at bottom of the flex column */}
+      <div className="shrink-0 flex flex-col gap-3 border-t border-border/40 bg-background pt-3 pb-4">
+
+        {/* Error */}
+        {error && (
+          <div className="rounded-xl border border-red-500/20 bg-red-500/[0.07] px-4 py-3 text-xs leading-relaxed text-red-400">
+            {error}
+          </div>
+        )}
+
+        {/* Pending check indicator */}
+        {pendingCheck && !loading && (
+          <div className="flex items-center gap-2 rounded-xl border border-primary/15 bg-primary/[0.05] px-3.5 py-2 text-xs">
+            <span className="shrink-0 text-foreground/35">Check question pending:</span>
+            <span className="truncate font-medium text-primary/80">{pendingCheck.concept_title}</span>
+            <button
+              onClick={() => setPendingCheck(null)}
+              className="ml-auto shrink-0 text-foreground/25 transition-colors hover:text-foreground/50"
+            >
+              Skip
+            </button>
+          </div>
+        )}
+
+        {/* Mastery update banner */}
+        {masteryBanner && (
+          <div className={[
+            'rounded-xl border px-4 py-2.5 text-xs leading-relaxed transition-all',
+            masteryBanner.correct
+              ? 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-400'
+              : 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400',
+          ].join(' ')}>
+            <span className="font-semibold">
+              {masteryBanner.correct ? 'Mastery updated ✓' : 'Mastery updated'}
+            </span>
+            {' · '}
+            <span className="opacity-80">{masteryBanner.concept_title}</span>
+            {masteryBanner.brief_feedback && (
+              <span className="opacity-60"> · {masteryBanner.brief_feedback}</span>
+            )}
+          </div>
+        )}
+
+        {/* Input row */}
+        <div className="flex gap-2 items-end">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            rows={2}
+            disabled={loading}
+            placeholder="Ask anything about your document… (Enter to send, Shift+Enter for newline)"
+            className="flex-1 resize-none rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/22 focus:border-foreground/22 focus:outline-none focus:ring-1 focus:ring-foreground/12 disabled:opacity-50"
+          />
+          <button
+            onClick={() => send()}
+            disabled={!input.trim() || loading}
+            className="shrink-0 rounded-xl border border-primary/25 bg-primary/[0.08] px-4 py-2.5 text-sm font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.14] disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            Ask
+          </button>
+        </div>
+
+        {/* Clear */}
+        {messages.length > 0 && (
+          <button
+            onClick={() => {
+              setMessages([])
+              setPendingCheck(null)
+              setMasteryBanner(null)
+              if (bannerTimer.current) clearTimeout(bannerTimer.current)
+              clearTutorMessages(documentId).catch(() => {})
+            }}
+            className="self-start text-[11px] text-foreground/22 transition-colors hover:text-foreground/45"
+          >
+            Clear conversation
+          </button>
+        )}
+      </div>
+
     </div>
   )
 }
@@ -403,7 +431,6 @@ function ActionIcon({ type, className }: { type: string; className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
     </svg>
   )
-  // open_visuals, continue_tutor, fallback
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
@@ -414,8 +441,6 @@ function ActionIcon({ type, className }: { type: string; className?: string }) {
 // ── TutorContent — renders text with fenced code blocks ───────────────────────
 
 function TutorContent({ content }: { content: string }) {
-  // Split on fenced code blocks. Allow optional trailing whitespace after the
-  // language tag (```python  \n) since models occasionally emit a trailing space.
   const parts = content.split(/(```[\w]*[ \t]*\n[\s\S]*?```)/g)
 
   return (

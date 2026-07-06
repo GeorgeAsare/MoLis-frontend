@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import type { FlashcardSet, FlashcardItem } from '@/types/flashcard'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { FlashcardProgress, CardStatus } from '@/types/flashcardProgress'
+import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ interface Props {
   initialFlashcards: FlashcardSet | null
   initialProgress?: FlashcardProgress | null
   analysis?: DocumentAnalysis | null
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -58,6 +60,7 @@ export function FlashcardsPanel({
   hasExtractedText,
   initialFlashcards,
   initialProgress,
+  onAskTutor,
 }: Props) {
   const [phase, setPhase] = useState<Phase>(() => {
     if (!initialFlashcards) return 'idle'
@@ -275,6 +278,7 @@ export function FlashcardsPanel({
         onMark={handleMark}
         onPrev={handlePrev}
         onNext={handleNext}
+        onAskTutor={onAskTutor}
       />
     )
   }
@@ -485,6 +489,7 @@ interface StudyModeProps {
   onMark: (status: 'known' | 'learning') => void
   onPrev: () => void
   onNext: () => void
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
 
 function StudyMode({
@@ -498,6 +503,7 @@ function StudyMode({
   onMark,
   onPrev,
   onNext,
+  onAskTutor,
 }: StudyModeProps) {
   const progress = ((currentIndex + 1) / totalCards) * 100
   const known = cardStatuses.filter((s) => s === 'known').length
@@ -615,6 +621,18 @@ function StudyMode({
           <ChevronRightIcon className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* Ask Tutor — only visible once card is flipped */}
+      {flipped && onAskTutor && (
+        <div className="flex justify-center">
+          <button
+            onClick={() => onAskTutor(`Explain this flashcard in a simpler way. Question: "${card.front}" / Answer: "${card.back}"`, 'simplify')}
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-1.5 text-[11px] font-medium text-foreground/35 transition-colors hover:border-foreground/15 hover:text-foreground/55"
+          >
+            Ask Tutor to explain this
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,10 +1,12 @@
 'use client'
 
 import type { StudyPlan, StudyBlock, BlockType, LinkedAction } from '@/types/studyPlan'
+import type { TutorMode } from '@/types/tutor'
 
 interface Props {
   plan: StudyPlan
   onNavigate: (tab: string) => void
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
 
 const BLOCK_LABELS: Record<BlockType, string> = {
@@ -36,7 +38,7 @@ function readinessBadge(score: number): string {
   return 'border-red-500/20 bg-red-500/[0.06] text-red-400'
 }
 
-export function StudyPlanCard({ plan, onNavigate }: Props) {
+export function StudyPlanCard({ plan, onNavigate, onAskTutor }: Props) {
   if (plan.study_blocks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card px-6 py-10 text-center">
@@ -95,6 +97,7 @@ export function StudyPlanCard({ plan, onNavigate }: Props) {
             block={block}
             index={i}
             onNavigate={onNavigate}
+            onAskTutor={onAskTutor}
           />
         ))}
       </div>
@@ -108,10 +111,12 @@ function BlockRow({
   block,
   index,
   onNavigate,
+  onAskTutor,
 }: {
   block: StudyBlock
   index: number
   onNavigate: (tab: string) => void
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
   return (
     <div className="flex items-start gap-3 rounded-xl border border-border bg-muted/25 px-3.5 py-3">
@@ -132,13 +137,23 @@ function BlockRow({
         <p className="text-[11px] text-foreground/22">{block.estimated_minutes} min</p>
       </div>
 
-      {/* Action button */}
-      <button
-        onClick={() => onNavigate(block.linked_action)}
-        className="mt-0.5 shrink-0 rounded-lg border border-primary/22 bg-primary/[0.07] px-2.5 py-1.5 text-[11px] font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.12]"
-      >
-        {ACTION_LABEL[block.linked_action]}
-      </button>
+      {/* Action buttons */}
+      <div className="mt-0.5 flex shrink-0 flex-col gap-1">
+        <button
+          onClick={() => onNavigate(block.linked_action)}
+          className="rounded-lg border border-primary/22 bg-primary/[0.07] px-2.5 py-1.5 text-[11px] font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.12]"
+        >
+          {ACTION_LABEL[block.linked_action]}
+        </button>
+        {onAskTutor && (
+          <button
+            onClick={() => onAskTutor(`Help me understand "${block.concept_title}". ${block.reason}`, 'explain')}
+            className="rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-[11px] font-medium text-foreground/40 transition-colors hover:border-foreground/15 hover:text-foreground/60"
+          >
+            Ask Tutor
+          </button>
+        )}
+      </div>
     </div>
   )
 }

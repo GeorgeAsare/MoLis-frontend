@@ -15,6 +15,7 @@ import type {
 } from '@/types/quiz'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { AnswerState, QuizAttempt } from '@/types/quizAttempt'
+import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ interface Props {
   initialQuiz: Quiz | null
   initialAttempt?: QuizAttempt | null
   analysis?: DocumentAnalysis | null
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -110,7 +112,7 @@ function typeLabel(type: QuizQuestion['type']): string {
 
 // ── QuizPanel ─────────────────────────────────────────────────────────────────
 
-export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAttempt }: Props) {
+export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAttempt, onAskTutor }: Props) {
   const [phase, setPhase] = useState<Phase>(() => {
     if (!initialQuiz) return 'idle'
     if (attemptMatchesQuiz(initialAttempt, initialQuiz)) {
@@ -353,6 +355,7 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAt
               answers={answers}
               onRetake={handleRetake}
               onRegenerate={triggerGenerate}
+              onAskTutor={onAskTutor}
             />
             {weakTopicsSaved === true && (
               <div className="mt-4 flex items-center gap-1.5 text-[11px] text-emerald-400/60">
@@ -839,11 +842,13 @@ function QuizReview({
   answers,
   onRetake,
   onRegenerate,
+  onAskTutor,
 }: {
   quiz: Quiz
   answers: AnswerState[]
   onRetake: () => void
   onRegenerate: () => void
+  onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
   const [showAnswers, setShowAnswers] = useState(false)
   const { correct, total } = computeScore(quiz.questions, answers)
@@ -980,6 +985,19 @@ function QuizReview({
                   <p className="ml-6 text-xs leading-relaxed text-foreground/30">
                     {q.explanation}
                   </p>
+                  {!isCorrect && onAskTutor && (
+                    <div className="ml-6">
+                      <button
+                        onClick={() => onAskTutor(
+                          `Explain why my answer was wrong for this question: "${q.question}". Correct explanation: "${q.explanation}"`,
+                          'quiz_help',
+                        )}
+                        className="rounded-md border border-primary/18 bg-primary/[0.05] px-2.5 py-1 text-[10px] font-medium text-primary/65 transition-colors hover:border-primary/30 hover:bg-primary/[0.10]"
+                      >
+                        Explain mistake
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             })}
