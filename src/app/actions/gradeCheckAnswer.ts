@@ -16,6 +16,20 @@ export interface GradeCheckResult {
   brief_feedback: string
 }
 
+// Short acknowledgements are never real answers — skip grading entirely to save an API call
+// and to keep pendingCheck alive so the student is still prompted to actually answer.
+const NON_ANSWER_WORDS = new Set([
+  'okay', 'ok', 'yes', 'yeah', 'yep', 'yup', 'got it', 'makes sense',
+  'understood', 'alright', 'cool', 'thanks', 'thank you', 'i see',
+  'i get it', 'sure', 'nice', 'great', 'perfect', 'sounds good',
+  'good', 'right', 'gotcha', 'noted', 'k', 'fair enough',
+])
+
+function isNonAnswer(text: string): boolean {
+  const normalized = text.toLowerCase().trim().replace(/[.!?,]+$/, '')
+  return NON_ANSWER_WORDS.has(normalized)
+}
+
 const GRADE_SYSTEM = `You are grading a student's answer to a check question from an AI tutor.
 
 Respond with ONLY valid JSON in this exact shape:
@@ -41,6 +55,8 @@ export async function gradeCheckAnswer(
   { studentAnswer, lastTutorMessage, checkMeta }: GradeCheckInput,
 ): Promise<GradeCheckResult | null> {
   if (!process.env.OPENAI_API_KEY) return null
+  // Hard-skip acknowledgements before spending an API call — keep pendingCheck alive
+  if (isNonAnswer(studentAnswer)) return null
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 

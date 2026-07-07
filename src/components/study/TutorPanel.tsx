@@ -73,9 +73,14 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
   // Expose prefill() so StudySetView can route here from other panels
   useImperativeHandle(ref, () => ({
     prefill(text, m) {
-      setInput(text)
       if (m) setMode(m)
-      // Wait for React to commit the state before moving focus/cursor/scroll
+      setInput(text)
+      if (textareaRef.current) {
+        textareaRef.current.value = text
+        // trigger resize immediately after DOM write
+        textareaRef.current.style.height = 'auto'
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`
+      }
       requestAnimationFrame(() => {
         if (textareaRef.current) {
           textareaRef.current.focus()
@@ -93,11 +98,23 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [messages, loading, pendingCheck])
 
+  // Auto-resize textarea whenever the input state changes
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [input])
+
   async function send(overrideText?: string, overrideMode?: TutorMode) {
-    const q = (overrideText ?? input).trim()
+    const q = (overrideText ?? textareaRef.current?.value ?? input).trim()
     const m = overrideMode ?? mode
     if (!q || loading) return
 
+    if (textareaRef.current) {
+      textareaRef.current.value = ''
+      textareaRef.current.style.height = 'auto'
+    }
     setInput('')
     setError(null)
 
@@ -110,7 +127,7 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
 
     try {
       const [res, gradeResult] = await Promise.all([
-        askTutor({ documentId, question: q, mode: m, recentMessages: messages.slice(-6) }),
+        askTutor({ documentId, question: q, mode: m, recentMessages: messages.slice(-8), pendingCheckConcept: checkToGrade?.concept_title }),
         checkToGrade
           ? gradeCheckAnswer(documentId, { studentAnswer: q, lastTutorMessage: lastTutorMsg, checkMeta: checkToGrade }).catch(() => null)
           : Promise.resolve(null),
@@ -143,8 +160,15 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
     }
   }
 
-  function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      e.key === 'Enter' &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.nativeEvent.isComposing
+    ) {
       e.preventDefault()
       send()
     }
@@ -246,13 +270,13 @@ export function TutorPanel({ documentId, initialMessages = [], onAction, ref }: 
         <div className="flex gap-2 items-end">
           <textarea
             ref={textareaRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            rows={2}
+            defaultValue=""
+            onInput={(e) => setInput(e.currentTarget.value)}
+            onKeyDown={handleKeyDown}
+            rows={1}
             disabled={loading}
             placeholder="Ask anything about your document… (Enter to send, Shift+Enter for newline)"
-            className="flex-1 resize-none rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/22 focus:border-foreground/22 focus:outline-none focus:ring-1 focus:ring-foreground/12 disabled:opacity-50"
+            className="flex-1 resize-none overflow-y-auto rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/22 focus:border-foreground/22 focus:outline-none focus:ring-1 focus:ring-foreground/12 disabled:opacity-50 pointer-events-auto select-text"
           />
           <button
             onClick={() => send()}
@@ -341,7 +365,7 @@ function MessageBubble({
     return (
       <div className="flex justify-end">
         <div className="max-w-[80%] rounded-2xl rounded-tr-sm border border-border bg-muted/50 px-4 py-2.5">
-          <p className="whitespace-pre-wrap text-sm text-foreground/80">{msg.content}</p>
+          <p className="select-text whitespace-pre-wrap text-sm text-foreground/80">{msg.content}</p>
         </div>
       </div>
     )
@@ -444,7 +468,7 @@ function TutorContent({ content }: { content: string }) {
   const parts = content.split(/(```[\w]*[ \t]*\n[\s\S]*?```)/g)
 
   return (
-    <div className="text-sm leading-7 text-foreground/78">
+    <div className="select-text text-sm leading-7 text-foreground/78">
       {parts.map((part, i) => {
         const codeMatch = part.match(/^```([\w]*)[ \t]*\n([\s\S]*?)```$/)
         if (codeMatch) {

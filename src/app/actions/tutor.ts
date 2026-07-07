@@ -42,6 +42,50 @@ const EMPTY_TWIN: StudentKnowledgeTwin = {
   has_enough_data: false,
 }
 
+// ── Acknowledgement / clarification detection ─────────────────────────────────
+
+const ACK_WORDS = new Set([
+  'okay', 'ok', 'yes', 'yeah', 'yep', 'yup', 'got it', 'makes sense',
+  'understood', 'alright', 'cool', 'thanks', 'thank you', 'i see',
+  'i get it', 'sure', 'nice', 'great', 'perfect', 'sounds good',
+  'good', 'fair enough', 'right', 'gotcha', 'noted', 'k',
+])
+
+function isAcknowledgement(q: string): boolean {
+  const normalized = q.toLowerCase().trim().replace(/[.!?,]+$/, '')
+  return ACK_WORDS.has(normalized)
+}
+
+const CLARIFICATION_PHRASES = [
+  'explain again', 'explain differently', "don't get it", 'dont get it',
+  "don't understand", 'dont understand', 'what do you mean', 'simpler',
+  'give me an example', 'give an example', 'show me code', 'show code',
+  'give code', 'code example', 'different explanation', 'different way',
+  "i still don't", 'i still dont', 'not clear', 'confused', 'lost me',
+  'one more example', 'another example', 'can you elaborate',
+]
+
+function needsClarification(q: string): boolean {
+  const normalized = q.toLowerCase().trim()
+  return CLARIFICATION_PHRASES.some(p => normalized.includes(p))
+}
+
+// ── Meta-help detection ───────────────────────────────────────────────────────
+
+const META_HELP_PHRASES = [
+  'who are you', 'what are you', 'what can you do', 'how can you help',
+  'how do you work', 'what is molis', 'what is this app', 'how does this app work',
+  'what does molis do', 'how does molis work', 'what are your features',
+  'how do i use', 'what can i ask', 'who made you', 'tell me about yourself',
+  'are you an ai', 'are you chatgpt', 'are you gpt', 'what is your purpose',
+  'what are you for', 'introduce yourself',
+]
+
+function isMetaHelp(q: string): boolean {
+  const normalized = q.toLowerCase().trim()
+  return META_HELP_PHRASES.some(p => normalized.includes(p))
+}
+
 // ── Intent classification ─────────────────────────────────────────────────────
 
 type TutorIntent =
@@ -50,10 +94,14 @@ type TutorIntent =
   | 'next_action'
   | 'prerequisite_gap'
   | 'practice'
+  | 'meta_help'
   | 'general'
 
 function classifyIntent(question: string, mode: TutorMode): TutorIntent {
-  // Mode takes unconditional priority
+  // Meta questions have unconditional priority regardless of mode
+  if (isMetaHelp(question)) return 'meta_help'
+
+  // Mode takes priority for study intents
   if (mode === 'quiz_help')  return 'mistake_debug'
   if (mode === 'next_step')  return 'next_action'
   if (mode === 'weak_topic') return 'practice'
@@ -86,6 +134,27 @@ function classifyIntent(question: string, mode: TutorMode): TutorIntent {
   return 'general'
 }
 
+// ── Meta-help system prompt (no teaching template) ────────────────────────────
+// Used exclusively when intent === 'meta_help' so the model never sees the
+// teaching template and cannot default to it.
+
+const META_HELP_SYSTEM_PROMPT = `You are MoLis Tutor — a personalised AI tutor embedded in a student's study app.
+
+The student is asking about who you are or what you can help with. Respond warmly and concisely.
+
+Format your reply like this:
+1. What you are (1 sentence)
+2. What you can help with — 3 to 5 bullet points specific to MoLis
+3. Two or three example questions the student can try (adapt them to the document title shown below if available)
+4. A short warm invitation to ask something
+
+Rules (strictly enforced):
+• Do NOT use the study teaching format (What happened / Correct idea / Why the confusion)
+• Do NOT include a Check question
+• Do NOT include an ACTION line
+• Keep your entire response under 130 words
+• Be warm, specific, and helpful — not generic`
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are MoLis Tutor — a personalised AI tutor built into a student's study app.
@@ -97,15 +166,32 @@ You have access to:
 • Their adaptive study plan and concept dependency graph
 • Their Student Knowledge Twin — a global learning profile across ALL documents, including overall readiness, recurring weak patterns, and preferred study mode (GLOBAL STUDENT KNOWLEDGE TWIN section, when available)
 
-DEFAULT TEACHING FORMAT (for explanations only):
+TEACHING FORMAT — use ONLY for document concept explanations, mistake debugging, simplifying, and exam prep:
 What happened: [1 sentence naming the concept or mistake]
 Correct idea: [2–3 sentences from the document]
 Why the confusion: [1–2 sentences on the likely misunderstanding]
 Example: [brief concrete example]
-Check (CONCEPT: <exact concept title from KEY CONCEPTS>): [one short question]
+Check (CONCEPT: <exact concept title from KEY CONCEPTS>): [one short question — OPTIONAL, see rules below]
 Next step: [specific named action]
 
-IMPORTANT: Each request includes a MODE/FORMAT instruction. That instruction OVERRIDES this default format. Always follow the specific format given in the MODE instruction.
+IMPORTANT: Each request includes a MODE/FORMAT instruction. That instruction OVERRIDES everything above. Always follow the specific format given in the MODE instruction exactly.
+
+When NOT to use the teaching template:
+• meta_help questions (who are you, what can you do, how can you help me) → answer naturally
+• acknowledgement messages (okay, got it, thanks, makes sense) → brief warm reply only
+• general or off-topic questions → answer briefly and naturally
+• next-step planning → use study plan format
+• practice questions → use practice format
+
+Check question rules:
+• ONLY include a Check question when actively teaching a document concept the student is learning or struggling with.
+• Do NOT ask a Check question after: meta/help responses, acknowledgements, general knowledge answers, next-step planning, off-topic questions.
+• One Check question maximum per response — never more.
+
+Off-topic and general knowledge rules:
+• If the question is general educational/knowledge: answer briefly and accurately, then offer to return to studying.
+• If the question requires live/current data (news, prices, real-time info): say you work from the student's uploaded documents and do not have live web access, then offer to help with their study material.
+• If the question is inappropriate or harmful: decline briefly and redirect.
 
 Priority order for context:
 1. Current document content and analysis
@@ -138,6 +224,32 @@ Rule: if your last sentence or "Next step" references flashcards, quiz, notes, v
 // practice / next_action / mistake_debug / prerequisite_gap intents.
 
 const INTENT_FORMAT: Partial<Record<TutorIntent, string>> = {
+  meta_help: `[MODE: META — the student is asking about MoLis Tutor, not a study question]
+
+Do NOT use the teaching template. Do NOT include a Check question. Do NOT include an ACTION line.
+
+Answer warmly and concisely:
+1. What you are (1–2 sentences): "I'm MoLis Tutor — a personalised AI tutor built into your study app. I learn from your uploaded documents, quiz results, and mastery levels to adapt to you specifically."
+2. What you can help with (3–5 short bullets):
+   • Explain any concept from their document in any style they need
+   • Debug quiz mistakes and show what went wrong
+   • Track mastery and surface weak topics
+   • Build a personalised study plan
+   • Give practice questions targeting their weakest areas
+3. Two or three concrete example questions they could try (adapt to the document title in context)
+4. A short invitation to ask something
+
+Keep it under 130 words. Be warm and specific. No teaching template. No check question.`,
+
+  general: `[MODE: GENERAL]
+Answer the student's question naturally.
+
+• If the question is about the document content or a concept in it: give a clear answer using the document material. You may use the teaching format if it genuinely helps.
+• If it is a general knowledge or educational question not directly in the document: answer briefly and accurately, then offer to return to studying.
+• If it requires live or current data (news, prices, stock quotes, today's events): explain that MoLis Tutor works from the student's uploaded documents and does not have live web or news access; offer to help with their study material instead.
+• If it is off-topic but harmless: answer briefly, then gently redirect to study.
+• Check question: only if actively teaching a document concept. Do not force one.`,
+
   practice: `FORMAT — PRACTICE MODE (follow this exactly, do not use the explanation template):
 "Let's practise [weakest concept title] — your weakest area.
 
@@ -636,6 +748,8 @@ function buildTwinContext(twin: StudentKnowledgeTwin, intent: TutorIntent): stri
   // Intent-specific guidance — tell the model how to use twin data for this request
   lines.push('')
   switch (intent) {
+    case 'meta_help':
+      return ''  // No twin context injected for meta questions
     case 'next_action':
       lines.push('TWIN GUIDANCE for this next-step request: if global review pressure is high or the recommended focus overlaps with this document, mention it. Suggest visiting the relevant document if the top focus area is in a different document.')
       break
@@ -682,6 +796,10 @@ function buildContext(
   const concepts = intelligence.concepts
 
   switch (intent) {
+    case 'meta_help':
+      // Minimal context — the model only needs to know what the student is studying
+      lines.push('The student is asking about MoLis Tutor. Answer naturally without using the teaching template.')
+      break
     case 'mistake_debug':
       appendMistakeDebug(lines, analysis, concepts, intelligence)
       break
@@ -737,6 +855,9 @@ function inferFallbackAction(
   plan: StudyPlan,
 ): TutorAction | null {
   switch (intent) {
+    case 'meta_help':
+    case 'general':
+      return null  // no action button for meta/general responses
     case 'practice': {
       const weakest = concepts
         .filter(c => c.review_count > 0)
@@ -793,6 +914,7 @@ export async function askTutor({
   question,
   mode,
   recentMessages,
+  pendingCheckConcept,
 }: AskTutorInput): Promise<TutorResponse> {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not configured.')
@@ -843,20 +965,49 @@ export async function askTutor({
   )
 
   const twinContext = buildTwinContext(twin, intent)
-  const systemMessage = twinContext
+
+  // meta_help uses its own system prompt that contains no teaching template,
+  // so the model cannot fall back to "What happened / Correct idea / Check question".
+  const systemMessage = intent === 'meta_help'
+    ? `${META_HELP_SYSTEM_PROMPT}\n\n${context}`
+    : twinContext
     ? `${SYSTEM_PROMPT}\n\n${context}\n\n${twinContext}`
     : `${SYSTEM_PROMPT}\n\n${context}`
 
-  // Last 6 messages = 3 turns of conversation context
-  const history = recentMessages.slice(-6).map(m => ({
+  // Last 8 messages = 4 turns of conversation context (enough to track check → ack → rephrase flow)
+  const history = recentMessages.slice(-8).map(m => ({
     role: m.role as 'user' | 'assistant',
     content: m.content,
   }))
 
   // Intent format overrides mode instruction for practice/next_action/mistake_debug/prerequisite_gap.
   // For concept_explain and general, fall back to mode instruction so explain/simplify/exam_prep still work.
-  const formatInstruction = INTENT_FORMAT[intent]
+  // Acknowledgement/clarification overrides take highest priority.
+  let formatInstruction = INTENT_FORMAT[intent]
     ?? `[Mode: ${MODE_LABEL[mode]}]\n${MODE_INSTRUCTION[mode]}`
+
+  if (isAcknowledgement(question) && pendingCheckConcept) {
+    formatInstruction =
+      `[STUDENT ACKNOWLEDGED — DO NOT REPEAT EXPLANATION]\n` +
+      `The student replied "${question.trim()}" — they are acknowledging your previous message, not asking a new question.\n` +
+      `There is a pending check question on concept: "${pendingCheckConcept}".\n` +
+      `Your ONLY task: one warm sentence acknowledging them, then prompt them to attempt the check question.\n` +
+      `Do NOT re-explain the concept. Do NOT write a new explanation. Do NOT start a new topic.\n` +
+      `Example: "Good — now try the check: [restate the check question concisely]"\n` +
+      `Keep your entire response to 2–4 sentences MAX. No ACTION line needed.`
+  } else if (isAcknowledgement(question)) {
+    formatInstruction =
+      `[STUDENT ACKNOWLEDGED]\n` +
+      `The student replied "${question.trim()}" — they understood your last message.\n` +
+      `Do NOT repeat the previous explanation. Ask them what they'd like to explore next, or suggest the natural next concept.\n` +
+      `Keep to 2–3 sentences.`
+  } else if (needsClarification(question)) {
+    formatInstruction =
+      `[STUDENT WANTS CLARIFICATION — USE A COMPLETELY DIFFERENT APPROACH]\n` +
+      `The student did not understand your previous explanation. Do NOT copy or echo the same text.\n` +
+      `Choose one of: everyday analogy, visual/spatial description, step-by-step numbered walkthrough, or concrete code example.\n` +
+      `Start from a different angle than your previous response. Max 6 sentences + optional code block.`
+  }
 
   const currentMessage = `${formatInstruction}\n\n${question}`
 

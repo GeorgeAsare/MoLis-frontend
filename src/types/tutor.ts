@@ -46,4 +46,5 @@ export interface AskTutorInput {
   question: string
   mode: TutorMode
   recentMessages: TutorMessage[]
+  pendingCheckConcept?: string
 }
