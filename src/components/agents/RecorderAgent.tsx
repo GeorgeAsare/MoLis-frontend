@@ -2,23 +2,34 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { processRecording, deleteRecording } from '@/app/actions/recordings'
+import { processRecording, deleteRecording, retryAnalysis } from '@/app/actions/recordings'
 import type {
   AgentClassification,
   AgentInsight,
   ContentType,
   DetailType,
+  ExamReadiness,
   ImportantDetail,
   KeyTerm,
   Recording,
   RecordingNotes,
   RecommendedAction,
   StudyRelevance,
+  TranscriptDiagnostics,
+  TranscriptQuality,
 } from '@/types/recordings'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type RecorderState = 'idle' | 'recording' | 'recorded' | 'processing' | 'complete' | 'error'
+type RecorderState = 'idle' | 'recording' | 'recorded' | 'processing' | 'complete' | 'error' | 'analysis_failed'
+
+type RecorderNoticeType =
+  | 'general_note'       // non-study content or low/none relevance — neutral, not a failure
+  | 'weak_audio_capture' // transcript too sparse for recording length
+  | 'too_short'          // recording under minimum viable length
+  | 'fallback_analysis'  // study-relevant content but advanced extraction fell back
+  | 'partial_extraction' // study-relevant + good audio but very few terms/details found
+  | 'none'               // full extraction worked — no notice needed
 
 interface ProcessingStep {
   id: string
@@ -76,11 +87,61 @@ const RELEVANCE_LABEL: Record<StudyRelevance, string> = {
 }
 
 const ACTION_LABEL: Record<RecommendedAction, string> = {
-  create_study_notes:      'Create study notes',
-  record_longer_sample:    'Record a longer sample',
-  save_as_general_note:    'Save as general note',
-  ignore_or_delete:        'Consider deleting — no study value',
+  create_study_notes:        'Create study notes',
+  record_longer_sample:      'Record a longer sample',
+  save_as_general_note:      'Save as general note',
+  ignore_or_delete:          'Consider deleting — no study value',
   send_to_study_agent_later: 'Send to Study Agent later',
+}
+
+const QUALITY_BADGE: Record<TranscriptQuality, { label: string; color: string }> = {
+  good:      { label: 'Good quality',   color: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/[0.06]' },
+  unclear:   { label: 'Partial quality',color: 'text-amber-400 border-amber-500/20 bg-amber-500/[0.06]' },
+  weak:      { label: 'Weak capture',   color: 'text-orange-400 border-orange-500/20 bg-orange-500/[0.06]' },
+  too_short: { label: 'Too short',      color: 'text-foreground/40 border-border bg-muted/20' },
+}
+
+const EXAM_READINESS_BADGE: Record<ExamReadiness, { label: string; color: string }> = {
+  high:         { label: 'Exam ready',              color: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/[0.06]' },
+  medium:       { label: 'Partially exam ready',    color: 'text-amber-400 border-amber-500/20 bg-amber-500/[0.06]' },
+  low:          { label: 'Limited exam value',      color: 'text-orange-400 border-orange-500/20 bg-orange-500/[0.06]' },
+  insufficient: { label: 'Not enough information',  color: 'text-foreground/30 border-border bg-muted/20' },
+}
+
+// Content types that are inherently non-study (regardless of relevance score)
+const GENERAL_NOTE_CONTENT_TYPES: ContentType[] = ['podcast', 'interview', 'personal_note', 'random_audio']
+
+function getRecorderNotice(
+  notes: RecordingNotes | null,
+  keyTermsCount: number,
+  detailsCount: number,
+): RecorderNoticeType {
+  if (!notes) return 'none'
+
+  const quality = notes.transcript_diagnostics?.transcript_quality
+  const studyRelevance = notes.agent_classification?.study_relevance
+  const contentType = notes.agent_classification?.content_type
+  const mode = notes.analysis_mode
+
+  // Audio/length failures — checked first, most fundamental
+  if (quality === 'too_short') return 'too_short'
+  if (quality === 'weak') return 'weak_audio_capture'
+
+  // Non-study content: classified by type OR explicit low/none relevance
+  const isNonStudyType = contentType ? GENERAL_NOTE_CONTENT_TYPES.includes(contentType) : false
+  const isLowRelevance = studyRelevance === 'low' || studyRelevance === 'none'
+  if (isNonStudyType || isLowRelevance) return 'general_note'
+
+  // Study-relevant content that fell back to basic analysis
+  const isStudyRelevant = studyRelevance === 'medium' || studyRelevance === 'high'
+  if (mode === 'fallback' && isStudyRelevant) return 'fallback_analysis'
+
+  // Study-relevant with good audio but very sparse results
+  if (isStudyRelevant && quality === 'good' && keyTermsCount + detailsCount < 3) {
+    return 'partial_extraction'
+  }
+
+  return 'none'
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -293,7 +354,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
       }
       markDone('upload')
 
-      const { recording: rec, agent_insight } = await processRecording({
+      const { recording: rec, agent_insight, analysis_status, user_message } = await processRecording({
         recordingId,
         title: title.trim(),
         subject: subject.trim(),
@@ -303,13 +364,19 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
       })
 
       markDone('transcribe')
-      markDone('analyse')
-      markDone('save')
-
-      setResult(rec)
-      setInsight(agent_insight)
       setRecordings(prev => [rec, ...prev])
-      setState('complete')
+
+      if (analysis_status === 'analysis_failed') {
+        setResult(rec)
+        setError(user_message ?? 'Transcript saved, but AI note analysis failed. Click "Retry analysis" to try again.')
+        setState('analysis_failed')
+      } else {
+        markDone('analyse')
+        markDone('save')
+        setResult(rec)
+        setInsight(agent_insight)
+        setState('complete')
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setError(msg)
@@ -317,7 +384,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
     }
   }
 
-  function resetToIdle() {
+  function resetToIdle(keepRecent = false) {
     setState('idle')
     setAudioBlob(null)
     setAudioBlobUrl(null)
@@ -326,8 +393,10 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
     setSubject('')
     setError(null)
     setSeconds(0)
-    setResult(null)
-    setInsight(null)
+    if (!keepRecent) {
+      setResult(null)
+      setInsight(null)
+    }
     setSteps([])
   }
 
@@ -338,6 +407,34 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
       if (result?.id === id) resetToIdle()
     } catch {
       // silent — not critical
+    }
+  }
+
+  async function handleRetryAnalysis(recordingId: string) {
+    setError(null)
+    setState('processing')
+    setSteps([{ id: 'analyse', label: 'Re-analysing saved transcript (no guessing)…', done: false }])
+
+    try {
+      const { recording: rec, agent_insight, analysis_status, user_message } = await retryAnalysis(recordingId)
+
+      setRecordings(prev => prev.map(r => r.id === rec.id ? rec : r))
+
+      if (analysis_status === 'analysis_failed') {
+        setResult(rec)
+        setError(user_message ?? 'Analysis failed again. Your transcript is still saved. Try again in a moment.')
+        setState('analysis_failed')
+      } else {
+        setSteps(prev => prev.map(s => ({ ...s, done: true })))
+        setResult(rec)
+        setInsight(agent_insight)
+        setState('complete')
+        setActiveTab('notes')
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(msg)
+      setState('error')
     }
   }
 
@@ -529,7 +626,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
                   Transcribe &amp; Analyse
                 </button>
                 <button
-                  onClick={resetToIdle}
+                  onClick={() => resetToIdle()}
                   className="rounded-xl border border-border bg-muted/30 px-4 py-2.5 text-sm text-foreground/45 transition-colors hover:text-foreground/70"
                 >
                   Discard
@@ -576,10 +673,46 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
                   Go back
                 </button>
                 <button
-                  onClick={resetToIdle}
+                  onClick={() => resetToIdle()}
                   className="rounded-xl border border-border bg-muted/30 px-4 py-2 text-sm text-foreground/55 hover:text-foreground/80"
                 >
                   Start over
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Analysis failed — transcript saved, show retry */}
+          {state === 'analysis_failed' && result && (
+            <div className="flex flex-col gap-4">
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 flex flex-col gap-1.5">
+                <p className="text-xs font-semibold text-amber-400">Transcript saved — AI analysis failed</p>
+                <p className="text-xs text-amber-400/70 leading-5">{error}</p>
+              </div>
+
+              {result.transcript && (
+                <div className="rounded-xl border border-border bg-muted/20 px-4 py-4 max-h-[280px] overflow-y-auto">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                    Saved transcript
+                  </p>
+                  <p className="text-xs text-foreground/50 leading-6 whitespace-pre-wrap font-mono select-text">
+                    {result.transcript}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => handleRetryAnalysis(result.id)}
+                  className="flex-1 rounded-xl border border-primary/25 bg-primary/[0.08] px-4 py-2.5 text-sm font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.14]"
+                >
+                  Retry analysis
+                </button>
+                <button
+                  onClick={() => resetToIdle()}
+                  className="rounded-xl border border-border bg-muted/30 px-4 py-2.5 text-sm text-foreground/45 transition-colors hover:text-foreground/70"
+                >
+                  New recording
                 </button>
               </div>
             </div>
@@ -623,6 +756,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
                       setActiveTab('notes')
                     }
                   }}
+                  onRetry={() => handleRetryAnalysis(rec.id)}
                   onDelete={() => handleDeleteRecording(rec.id)}
                 />
               ))}
@@ -652,18 +786,37 @@ function RecordingResults({
 }) {
   const notes = recording.notes as RecordingNotes | null
   const classification = notes?.agent_classification as AgentClassification | undefined
+  const diagnostics = notes?.transcript_diagnostics as TranscriptDiagnostics | undefined
+  const examReadiness = notes?.exam_readiness as ExamReadiness | undefined
   const keyTerms = (recording.key_terms as KeyTerm[] | null) ?? []
   const importantDetails = (recording.important_details as ImportantDetail[] | null) ?? []
+  const noticeType = getRecorderNotice(notes, keyTerms.length, importantDetails.length)
 
   return (
     <div className="flex flex-col gap-5">
 
-      {/* Agent insight banner */}
-      <div className="rounded-xl border border-primary/12 bg-primary/[0.04] px-4 py-3 flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
-          <SparklesIcon className="h-3.5 w-3.5 text-primary/70 shrink-0" />
-          <p className="text-xs font-semibold text-foreground/70">Agent summary</p>
+      {/* Transcript diagnostics + exam readiness header */}
+      <div className="rounded-xl border border-primary/12 bg-primary/[0.04] px-4 py-3 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <SparklesIcon className="h-3.5 w-3.5 text-primary/70 shrink-0" />
+            <p className="text-xs font-semibold text-foreground/70">Agent summary</p>
+          </div>
+          {/* Exam readiness + quality badges */}
+          <div className="flex items-center gap-2">
+            {diagnostics && (
+              <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold ${QUALITY_BADGE[diagnostics.transcript_quality].color}`}>
+                {QUALITY_BADGE[diagnostics.transcript_quality].label}
+              </span>
+            )}
+            {examReadiness && (
+              <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold ${EXAM_READINESS_BADGE[examReadiness].color}`}>
+                {EXAM_READINESS_BADGE[examReadiness].label}
+              </span>
+            )}
+          </div>
         </div>
+
         <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-foreground/50 pl-5">
           <span>Found <strong className="text-foreground/70">{insight.key_terms_found}</strong> key terms</span>
           <span><strong className="text-foreground/70">{insight.exam_relevant_count}</strong> exam-relevant details</span>
@@ -672,7 +825,25 @@ function RecordingResults({
               <strong>{insight.unclear_count}</strong> unclear areas
             </span>
           )}
+          {diagnostics && (
+            <span>
+              {diagnostics.transcript_word_count} words · ~{diagnostics.words_per_minute} wpm
+            </span>
+          )}
         </div>
+
+        {/* Weak quality warning */}
+        {diagnostics && (diagnostics.transcript_quality === 'weak' || diagnostics.transcript_quality === 'too_short') && (
+          <div className="ml-5 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] px-3 py-2">
+            <p className="text-xs text-amber-400/80 leading-5">{diagnostics.quality_reason}</p>
+            {diagnostics.transcript_quality === 'weak' && (
+              <p className="text-[11px] text-amber-400/55 mt-1">
+                This recording did not capture enough detail to generate exam-ready notes.
+              </p>
+            )}
+          </div>
+        )}
+
         <p className="text-xs text-foreground/45 pl-5">
           <span className="text-foreground/30">Recommended: </span>{insight.recommended_next}
         </p>
@@ -682,6 +853,13 @@ function RecordingResults({
       {classification && (
         <AgentJudgement classification={classification} />
       )}
+
+      {/* Context-aware recorder notice */}
+      <RecorderNotice
+        type={noticeType}
+        classification={classification}
+        onNewRecording={onNewRecording}
+      />
 
       {/* Summary */}
       {recording.summary && (
@@ -722,7 +900,8 @@ function RecordingResults({
 
         {/* Notes tab */}
         {activeTab === 'notes' && notes && (
-          <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-6">
+
             {notes.key_points.length > 0 && (
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
@@ -742,14 +921,103 @@ function RecordingResults({
             {notes.sections.length > 0 && (
               <div className="flex flex-col gap-3">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25">
-                  Sections
+                  Lecture outline
                 </p>
                 {notes.sections.map((s, i) => (
                   <div key={i} className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-                    <p className="text-xs font-semibold text-foreground/65 mb-1">{s.heading}</p>
+                    <p className="text-xs font-semibold text-foreground/65 mb-1.5">{s.heading}</p>
                     <p className="text-sm leading-6 text-foreground/55">{s.content}</p>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {notes.definitions && notes.definitions.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Definitions
+                </p>
+                <div className="flex flex-col gap-2">
+                  {notes.definitions.map((d, i) => (
+                    <div key={i} className="rounded-xl border border-blue-500/15 bg-blue-500/[0.04] px-4 py-2.5">
+                      <p className="text-xs font-semibold text-blue-400/80 mb-0.5">{d.term}</p>
+                      <p className="text-sm leading-6 text-foreground/60">{d.definition}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {notes.examples && notes.examples.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Examples
+                </p>
+                <div className="flex flex-col gap-2">
+                  {notes.examples.map((ex, i) => (
+                    <div key={i} className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.04] px-4 py-2.5">
+                      <p className="text-sm leading-6 text-foreground/65">{ex.description}</p>
+                      {ex.context && (
+                        <p className="text-xs text-foreground/35 mt-1 italic">{ex.context}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {notes.common_mistakes && notes.common_mistakes.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Common mistakes
+                </p>
+                <div className="flex flex-col gap-2">
+                  {notes.common_mistakes.map((m, i) => (
+                    <div key={i} className="rounded-xl border border-red-500/15 bg-red-500/[0.04] px-4 py-2.5 flex flex-col gap-1">
+                      <p className="text-xs text-red-400/70 line-through">{m.mistake}</p>
+                      <p className="text-sm text-foreground/65 leading-6">{m.correction}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {notes.code_examples && notes.code_examples.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Code examples
+                </p>
+                <div className="flex flex-col gap-3">
+                  {notes.code_examples.map((ce, i) => (
+                    <div key={i} className="rounded-xl border border-violet-500/15 bg-violet-500/[0.04] overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-1.5 border-b border-violet-500/10">
+                        <p className="text-[10px] font-semibold text-violet-400/70 uppercase tracking-wider">{ce.language}</p>
+                      </div>
+                      <pre className="px-4 py-3 text-xs text-foreground/65 leading-6 font-mono overflow-x-auto whitespace-pre-wrap">
+                        {ce.code}
+                      </pre>
+                      {ce.description && (
+                        <p className="px-4 pb-3 text-xs text-foreground/40 italic">{ce.description}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {notes.formulas && notes.formulas.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Formulas
+                </p>
+                <div className="flex flex-col gap-2">
+                  {notes.formulas.map((f, i) => (
+                    <div key={i} className="rounded-xl border border-cyan-500/15 bg-cyan-500/[0.04] px-4 py-2.5">
+                      <p className="text-sm font-mono text-cyan-400/80 mb-1">{f.expression}</p>
+                      <p className="text-xs text-foreground/50">{f.description}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -758,14 +1026,30 @@ function RecordingResults({
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
                   Possible exam questions
                 </p>
-                <ul className="flex flex-col gap-1.5">
+                <ul className="flex flex-col gap-2">
                   {notes.possible_exam_questions.map((q, i) => (
-                    <li key={i} className="flex gap-2 text-sm text-foreground/60">
-                      <span className="shrink-0 font-mono text-[10px] text-primary/50 mt-0.5">Q{i + 1}</span>
-                      {q}
+                    <li key={i} className="flex gap-2.5 rounded-xl border border-primary/10 bg-primary/[0.03] px-4 py-2.5">
+                      <span className="shrink-0 font-mono text-[10px] text-primary/50 mt-0.5 font-bold">Q{i + 1}</span>
+                      <span className="text-sm text-foreground/65 leading-6">{q}</span>
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {notes.flashcard_seed_items && notes.flashcard_seed_items.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25 mb-2">
+                  Flashcard seeds <span className="normal-case text-foreground/20 font-normal">({notes.flashcard_seed_items.length})</span>
+                </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {notes.flashcard_seed_items.map((fc, i) => (
+                    <div key={i} className="rounded-xl border border-border bg-card/60 px-3 py-2.5 flex flex-col gap-1.5">
+                      <p className="text-xs font-semibold text-foreground/70">{fc.front}</p>
+                      <p className="text-xs text-foreground/45 leading-5 border-t border-border/40 pt-1.5">{fc.back}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -781,6 +1065,7 @@ function RecordingResults({
                 </ul>
               </div>
             )}
+
           </div>
         )}
 
@@ -900,18 +1185,31 @@ function RecentRecordingRow({
   rec,
   isActive,
   onOpen,
+  onRetry,
   onDelete,
 }: {
   rec: Recording
   isActive: boolean
   onOpen: () => void
+  onRetry: () => void
   onDelete: () => void
 }) {
   const statusColor: Record<string, string> = {
-    complete:   'text-emerald-400',
-    processing: 'text-amber-400',
-    error:      'text-red-400',
-    draft:      'text-foreground/30',
+    complete:             'text-emerald-400',
+    processing:           'text-amber-400',
+    error:                'text-red-400',
+    transcription_failed: 'text-red-400',
+    analysis_failed:      'text-amber-400',
+    draft:                'text-foreground/30',
+  }
+
+  const statusLabel: Record<string, string> = {
+    complete:             'complete',
+    processing:           'processing',
+    error:                'failed',
+    transcription_failed: 'no transcript',
+    analysis_failed:      'analysis failed',
+    draft:                'draft',
   }
 
   return (
@@ -927,7 +1225,7 @@ function RecentRecordingRow({
         <div className="flex items-center gap-2">
           <p className="truncate text-sm font-medium text-foreground/75">{rec.title}</p>
           <span className={`text-[10px] font-semibold uppercase ${statusColor[rec.status] ?? 'text-foreground/30'}`}>
-            {rec.status}
+            {statusLabel[rec.status] ?? rec.status}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-foreground/30 mt-0.5">
@@ -959,6 +1257,15 @@ function RecentRecordingRow({
           Open
         </button>
       )}
+      {rec.status === 'analysis_failed' && (
+        <button
+          onClick={onRetry}
+          className="shrink-0 text-xs text-amber-400/70 hover:text-amber-400 transition-colors font-medium"
+          title="Re-run AI analysis on the saved transcript"
+        >
+          Retry
+        </button>
+      )}
       <button
         onClick={onDelete}
         className="shrink-0 text-foreground/20 hover:text-red-400/70 transition-colors"
@@ -968,6 +1275,100 @@ function RecentRecordingRow({
       </button>
     </div>
   )
+}
+
+// ── RecorderNotice ────────────────────────────────────────────────────────────
+
+function RecorderNotice({
+  type,
+  classification,
+  onNewRecording,
+}: {
+  type: RecorderNoticeType
+  classification: AgentClassification | undefined
+  onNewRecording: () => void
+}) {
+  if (type === 'none') return null
+
+  if (type === 'general_note') {
+    const contentLabel = classification
+      ? CONTENT_TYPE_LABEL[classification.content_type]
+      : 'non-study content'
+    return (
+      <div className="rounded-xl border border-foreground/10 bg-muted/30 px-4 py-2.5 flex items-start gap-2.5">
+        <span className="text-foreground/30 shrink-0 mt-0.5 text-sm">ℹ</span>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-xs font-semibold text-foreground/55">General note created</p>
+          <p className="text-xs text-foreground/40 leading-5">
+            MoLis classified this as {contentLabel.toLowerCase()}, so it saved a grounded summary instead of creating exam materials.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (type === 'too_short') {
+    return (
+      <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.04] px-4 py-2.5 flex items-start gap-2.5">
+        <span className="text-amber-400/60 shrink-0 mt-0.5">⚠</span>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-xs font-semibold text-amber-400/80">Recording too short</p>
+          <p className="text-xs text-amber-400/60 leading-5">
+            MoLis needs more transcript content to create reliable study notes. Try recording at least 1–2 minutes of explanation.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (type === 'weak_audio_capture') {
+    return (
+      <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.04] px-4 py-2.5 flex items-start gap-2.5">
+        <span className="text-amber-400/60 shrink-0 mt-0.5">⚠</span>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-xs font-semibold text-amber-400/80">Weak audio capture</p>
+          <p className="text-xs text-amber-400/60 leading-5">
+            The transcript looks too sparse for the recording length. Record closer to the speaker or upload clearer audio for better notes.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (type === 'fallback_analysis') {
+    return (
+      <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.04] px-4 py-2.5 flex items-start gap-2.5">
+        <span className="text-amber-400/60 shrink-0 mt-0.5">⚠</span>
+        <p className="text-xs text-amber-400/70 leading-5">
+          <strong className="text-amber-400/80">Basic notes generated.</strong>{' '}
+          MoLis saved useful notes, but advanced extraction was unavailable this time. You can{' '}
+          <button
+            onClick={onNewRecording}
+            className="underline hover:text-amber-400 transition-colors"
+          >
+            record a clearer section
+          </button>{' '}
+          or retry analysis.
+        </p>
+      </div>
+    )
+  }
+
+  if (type === 'partial_extraction') {
+    return (
+      <div className="rounded-xl border border-foreground/10 bg-muted/30 px-4 py-2.5 flex items-start gap-2.5">
+        <span className="text-foreground/30 shrink-0 mt-0.5 text-sm">ℹ</span>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-xs font-semibold text-foreground/55">Limited study material found</p>
+          <p className="text-xs text-foreground/40 leading-5">
+            The recording was clear, but it did not contain many explicit definitions, key terms, or exam-style details.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return null
 }
 
 // ── AgentJudgement ────────────────────────────────────────────────────────────

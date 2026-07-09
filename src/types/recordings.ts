@@ -1,4 +1,23 @@
-export type RecordingStatus = 'draft' | 'processing' | 'complete' | 'error'
+export type RecordingStatus =
+  | 'draft'
+  | 'processing'
+  | 'complete'
+  | 'error'
+  | 'transcription_failed'
+  | 'analysis_failed'
+
+export type TranscriptQuality = 'good' | 'weak' | 'too_short' | 'unclear'
+export type ExamReadiness = 'high' | 'medium' | 'low' | 'insufficient'
+export type AnalysisMode = 'full' | 'fallback'
+
+export interface TranscriptDiagnostics {
+  transcript_word_count: number
+  segment_count: number
+  duration_seconds: number
+  words_per_minute: number
+  transcript_quality: TranscriptQuality
+  quality_reason: string
+}
 
 export type ContentType =
   | 'lecture'
@@ -65,7 +84,12 @@ export interface RecordingNotes {
   flashcard_seed_items: { front: string; back: string }[]
   concepts_detected: string[]
   unclear_or_low_confidence_parts: string[]
+  common_mistakes: { mistake: string; correction: string }[]
+  code_examples: { code: string; language: string; description: string }[]
+  exam_readiness: ExamReadiness
   agent_classification?: AgentClassification
+  transcript_diagnostics?: TranscriptDiagnostics
+  analysis_mode?: AnalysisMode
 }
 
 export interface AgentInsight {
@@ -107,5 +131,7 @@ export interface ProcessRecordingInput {
 
 export interface ProcessRecordingResult {
   recording: Recording
-  agent_insight: AgentInsight
+  agent_insight: AgentInsight | null
+  analysis_status: 'complete' | 'analysis_failed'
+  user_message?: string
 }
