@@ -1,55 +1,103 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 
+function mapLoginError(message: string): { text: string; unconfirmed?: boolean } {
+  const m = message.toLowerCase()
+  if (m.includes('invalid login credentials') || m.includes('invalid credentials'))
+    return { text: 'Incorrect email or password.' }
+  if (m.includes('email not confirmed') || m.includes('not confirmed'))
+    return { text: 'Your email is not confirmed yet.', unconfirmed: true }
+  if (m.includes('too many requests') || m.includes('rate limit'))
+    return { text: 'Too many sign-in attempts. Wait a few minutes and try again.' }
+  if (m.includes('user not found'))
+    return { text: 'No account found with that email.' }
+  return { text: message }
+}
+
 export function LoginForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() => searchParams.get('error') ?? '')
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState('')
   const [loading, setLoading] = useState(false)
+  const [navigating, setNavigating] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
+  const [resending, setResending] = useState(false)
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sent' | 'error'>('idle')
 
-  async function handleEmailLogin(e: React.FormEvent) {
+  async function handleEmailLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (loading || navigating) return
     setError('')
+    setUnconfirmedEmail('')
+    setResendStatus('idle')
     setLoading(true)
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    try {
+      const supabase = createClient()
+      const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
 
-    if (error) {
-      setError(error.message)
+      if (authError) {
+        const mapped = mapLoginError(authError.message)
+        setError(mapped.text)
+        if (mapped.unconfirmed) setUnconfirmedEmail(email)
+        return
+      }
+
+      setNavigating(true)
+      router.push('/dashboard')
+      router.refresh()
+    } finally {
       setLoading(false)
-      return
     }
-
-    router.push('/dashboard')
-    router.refresh()
   }
 
   async function handleGoogleLogin() {
+    if (googleLoading) return
     setError('')
     setGoogleLoading(true)
 
     const supabase = createClient()
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { error: authError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
       },
     })
 
-    if (error) {
-      setError(error.message)
+    if (authError) {
+      setError(authError.message)
       setGoogleLoading(false)
     }
+    // On success the browser navigates away — no need to reset googleLoading
   }
+
+  async function handleResendConfirmation() {
+    if (resending || !unconfirmedEmail) return
+    setResending(true)
+    setResendStatus('idle')
+
+    const supabase = createClient()
+    const { error: resendError } = await supabase.auth.resend({
+      type: 'signup',
+      email: unconfirmedEmail,
+      options: { emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback` },
+    })
+
+    setResending(false)
+    setResendStatus(resendError ? 'error' : 'sent')
+  }
+
+  const busy = loading || navigating
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 p-6">
@@ -63,6 +111,7 @@ export function LoginForm() {
           onChange={(e) => setEmail(e.target.value)}
           required
           autoComplete="email"
+          disabled={busy}
         />
         <Input
           id="password"
@@ -73,16 +122,40 @@ export function LoginForm() {
           onChange={(e) => setPassword(e.target.value)}
           required
           autoComplete="current-password"
+          disabled={busy}
         />
 
-        {error ? (
-          <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-            {error}
-          </p>
-        ) : null}
+        {error && (
+          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-xs text-red-400 space-y-2">
+            <p>{error}</p>
+            {unconfirmedEmail && (
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleResendConfirmation}
+                  disabled={resending}
+                  className="underline underline-offset-2 hover:text-red-300 disabled:opacity-50 transition-colors"
+                >
+                  {resending ? 'Sending…' : 'Resend confirmation email'}
+                </button>
+                {resendStatus === 'sent' && (
+                  <span className="text-green-400">Sent — check your inbox.</span>
+                )}
+                {resendStatus === 'error' && (
+                  <span>Failed to resend. Try again.</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
-        <Button type="submit" loading={loading} className="w-full mt-1">
-          Sign in
+        <Button
+          type="submit"
+          loading={busy}
+          disabled={busy}
+          className="w-full mt-1"
+        >
+          {navigating ? 'Signing you in…' : 'Sign in'}
         </Button>
       </form>
 
@@ -96,6 +169,7 @@ export function LoginForm() {
         variant="secondary"
         onClick={handleGoogleLogin}
         loading={googleLoading}
+        disabled={googleLoading || busy}
         className="w-full"
         type="button"
       >

@@ -6,6 +6,27 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 
+function mapSignupError(message: string): string {
+  const m = message.toLowerCase()
+  if (m.includes('rate limit') || m.includes('email rate'))
+    return 'Too many confirmation emails sent. Wait a few minutes before trying again.'
+  if (m.includes('invalid') && m.includes('email'))
+    return 'Please enter a valid email address.'
+  if (m.includes('password') && (m.includes('short') || m.includes('weak') || m.includes('least')))
+    return 'Password must be at least 8 characters.'
+  if (m.includes('already registered') || m.includes('already in use'))
+    return 'An account with this email already exists. Try signing in instead.'
+  if (m.includes('signup') && m.includes('disabled'))
+    return 'New signups are temporarily disabled. Please try again later.'
+  return message
+}
+
+function mapResendError(message: string): string {
+  const m = message.toLowerCase()
+  if (m.includes('rate limit')) return 'Too many resend attempts. Wait a few minutes.'
+  return 'Could not resend. Please try again.'
+}
+
 export function SignupForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -14,57 +35,136 @@ export function SignupForm() {
   const [loading, setLoading] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [emailSent, setEmailSent] = useState(false)
+  const [resending, setResending] = useState(false)
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sent' | 'error'>('idle')
+  const [resendError, setResendError] = useState('')
 
-  async function handleSignup(e: React.FormEvent) {
+  async function handleSignup(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (loading) return
     setError('')
     setLoading(true)
 
-    const supabase = createClient()
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: fullName },
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
-      },
-    })
+    try {
+      const supabase = createClient()
+      const { error: signupError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName },
+          emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
+        },
+      })
 
-    if (error) {
-      setError(error.message)
+      if (signupError) {
+        setError(mapSignupError(signupError.message))
+        return
+      }
+
+      // Supabase returns success even for existing emails (privacy protection).
+      // We cannot distinguish "new user" from "already registered" here.
+      setEmailSent(true)
+    } finally {
       setLoading(false)
-      return
     }
-
-    setEmailSent(true)
-    setLoading(false)
   }
 
   async function handleGoogleSignup() {
+    if (googleLoading) return
     setError('')
     setGoogleLoading(true)
 
     const supabase = createClient()
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { error: authError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
       },
     })
 
-    if (error) {
-      setError(error.message)
+    if (authError) {
+      setError(authError.message)
       setGoogleLoading(false)
+    }
+  }
+
+  async function handleResend() {
+    if (resending) return
+    setResending(true)
+    setResendStatus('idle')
+    setResendError('')
+
+    const supabase = createClient()
+    const { error: err } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+      options: { emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback` },
+    })
+
+    setResending(false)
+    if (err) {
+      setResendStatus('error')
+      setResendError(mapResendError(err.message))
+    } else {
+      setResendStatus('sent')
     }
   }
 
   if (emailSent) {
     return (
-      <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center">
-        <div className="mb-3 text-2xl">📬</div>
-        <h2 className="text-sm font-medium text-white">Check your email</h2>
-        <p className="mt-1 text-xs text-white/40">
-          We sent a confirmation link to <span className="text-white/60">{email}</span>
+      <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center flex flex-col gap-4">
+        <div>
+          <div className="mb-3 text-2xl">📬</div>
+          <h2 className="text-sm font-medium text-white">Confirmation email requested</h2>
+          <p className="mt-1.5 text-xs text-white/40 leading-5">
+            If an account does not already exist for{' '}
+            <span className="text-white/60">{email}</span>, a confirmation link
+            has been sent. Check your inbox and spam folder.
+          </p>
+        </div>
+
+        <div className="border-t border-white/8 pt-4 flex flex-col gap-3">
+          <p className="text-xs text-white/35">Didn&apos;t receive it?</p>
+
+          {resendStatus === 'sent' ? (
+            <p className="text-xs text-green-400">
+              Confirmation email resent. Check your inbox and spam folder.
+            </p>
+          ) : (
+            <Button
+              variant="secondary"
+              onClick={handleResend}
+              loading={resending}
+              disabled={resending}
+              className="w-full"
+              type="button"
+            >
+              {resending ? 'Sending…' : 'Resend confirmation email'}
+            </Button>
+          )}
+
+          {resendStatus === 'error' && resendError && (
+            <p className="text-xs text-red-400">{resendError}</p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setEmailSent(false)
+              setResendStatus('idle')
+              setResendError('')
+            }}
+            className="text-xs text-white/35 hover:text-white/60 transition-colors"
+          >
+            Try a different email
+          </button>
+        </div>
+
+        <p className="text-xs text-white/25 leading-5">
+          Already confirmed?{' '}
+          <Link href="/login" className="text-white/50 hover:text-white/80 transition-colors">
+            Sign in
+          </Link>
         </p>
       </div>
     )
@@ -82,6 +182,7 @@ export function SignupForm() {
           onChange={(e) => setFullName(e.target.value)}
           required
           autoComplete="name"
+          disabled={loading}
         />
         <Input
           id="email"
@@ -92,6 +193,7 @@ export function SignupForm() {
           onChange={(e) => setEmail(e.target.value)}
           required
           autoComplete="email"
+          disabled={loading}
         />
         <Input
           id="password"
@@ -103,15 +205,16 @@ export function SignupForm() {
           required
           minLength={8}
           autoComplete="new-password"
+          disabled={loading}
         />
 
-        {error ? (
+        {error && (
           <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
           </p>
-        ) : null}
+        )}
 
-        <Button type="submit" loading={loading} className="w-full mt-1">
+        <Button type="submit" loading={loading} disabled={loading} className="w-full mt-1">
           Create account
         </Button>
       </form>
@@ -126,6 +229,7 @@ export function SignupForm() {
         variant="secondary"
         onClick={handleGoogleSignup}
         loading={googleLoading}
+        disabled={googleLoading || loading}
         className="w-full"
         type="button"
       >
