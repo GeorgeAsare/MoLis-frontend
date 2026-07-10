@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/components/animations'
 import { NeuralOrb } from '@/components/ui/NeuralOrb'
 import { getDashboardIntelligence } from '@/app/actions/dashboardIntelligence'
@@ -7,6 +8,9 @@ import { createClient } from '@/lib/supabase/server'
 import type { DigestActivity, DigestActivityType } from '@/types/studyDigest'
 import type { WeakConceptItem, WeakReason, RecommendedNextAction } from '@/types/dashboardIntelligence'
 import type { StudentKnowledgeTwin } from '@/types/studentKnowledgeTwin'
+import type { StudentProfileRow, AcademicProfile, StudyPreferences } from '@/types/user'
+import { computeStudentPerformanceProfile, DEFAULT_STUDY_PREFS } from '@/lib/studentPerformance'
+import type { StudentPerformanceProfile } from '@/types/studentPerformance'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
@@ -18,11 +22,39 @@ export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
+  // Check onboarding before any expensive queries.
+  // Only redirect when the query succeeds and the profile is definitively incomplete.
+  // If the table doesn't exist yet (pre-SQL-setup), the error is non-null → let user through.
+  const { data: profileRows, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('*')
+    .eq('user_id', user!.id)
+    .limit(1)
+
+  if (!profileError && !profileRows?.[0]?.onboarding_completed) {
+    redirect('/dashboard/onboarding')
+  }
+
+  const profileRow = (profileRows?.[0] ?? null) as StudentProfileRow | null
+
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
   const [intel, twin] = await Promise.all([
     getDashboardIntelligence(),
     getStudentKnowledgeTwin(),
   ])
+
+  const academicProfile = profileRow?.academic_profile as AcademicProfile | undefined
+  const studyPrefs = profileRow?.study_preferences as StudyPreferences | undefined
+  const performanceProfile: StudentPerformanceProfile | null =
+    academicProfile?.subjects?.length &&
+    academicProfile.subjects.some(s => s.target_grade)
+      ? computeStudentPerformanceProfile({
+          academic: academicProfile,
+          prefs: studyPrefs ?? DEFAULT_STUDY_PREFS,
+          twin,
+          intel,
+        })
+      : null
 
   const totalDocs = intel?.total_documents ?? 0
   const totalConcepts = intel?.total_concepts_tracked ?? 0
@@ -155,6 +187,13 @@ export default async function DashboardPage() {
             {nextAction && (
               <SlideUp delay={0.25}>
                 <NextActionCard action={nextAction} />
+              </SlideUp>
+            )}
+
+            {/* Performance vs Target */}
+            {performanceProfile && (
+              <SlideUp delay={0.27}>
+                <PerformanceProfileCard profile={performanceProfile} />
               </SlideUp>
             )}
 
@@ -303,6 +342,100 @@ export default async function DashboardPage() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── PerformanceProfileCard ────────────────────────────────────────────────────
+
+function PerformanceProfileCard({ profile }: { profile: StudentPerformanceProfile }) {
+  const statusConfig = {
+    on_track:           { label: 'On track',           dot: 'bg-emerald-400', text: 'text-emerald-400', ring: 'border-emerald-500/20 bg-emerald-500/[0.06]' },
+    approaching_target: { label: 'Approaching target', dot: 'bg-sky-400',     text: 'text-sky-400',     ring: 'border-sky-500/20 bg-sky-500/[0.06]' },
+    behind_target:      { label: 'Behind target',      dot: 'bg-amber-400',   text: 'text-amber-400',   ring: 'border-amber-500/20 bg-amber-500/[0.07]' },
+    needs_urgent_focus: { label: 'Urgent focus needed',dot: 'bg-red-400',     text: 'text-red-400',     ring: 'border-red-500/20 bg-red-500/[0.07]' },
+    not_enough_data:    { label: 'Building profile',   dot: 'bg-foreground/20',text: 'text-foreground/38',ring: 'border-border bg-muted/25' },
+  }
+
+  const st = statusConfig[profile.on_track_status]
+
+  const metricPills = [
+    {
+      label: profile.effort_level.replace(/_/g, ' '),
+      sub: 'effort',
+      color:
+        profile.effort_level === 'high'     ? 'border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-400'
+        : profile.effort_level === 'very_low' ? 'border-red-500/15 bg-red-500/[0.05] text-red-400/70'
+        : 'border-border bg-muted/25 text-foreground/40',
+    },
+    {
+      label: profile.consistency_level.replace(/_/g, ' '),
+      sub: 'consistency',
+      color:
+        profile.consistency_level === 'consistent'   ? 'border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-400'
+        : profile.consistency_level === 'inconsistent' ? 'border-red-500/15 bg-red-500/[0.05] text-red-400/70'
+        : 'border-border bg-muted/25 text-foreground/40',
+    },
+    {
+      label: profile.risk_level,
+      sub: 'risk',
+      color:
+        profile.risk_level === 'low'      ? 'border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-400'
+        : profile.risk_level === 'critical' ? 'border-red-500/20 bg-red-500/[0.07] text-red-400'
+        : profile.risk_level === 'high'    ? 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400'
+        : 'border-border bg-muted/25 text-foreground/40',
+    },
+  ]
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className="mb-4 flex items-start justify-between">
+        <div>
+          <p className="text-[13px] font-semibold text-foreground/75">Performance vs Target</p>
+          <p className="mt-0.5 text-xs text-foreground/38">How you track against your goals</p>
+        </div>
+        <div className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${st.ring}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />
+          <span className={`text-[11px] font-semibold ${st.text}`}>{st.label}</span>
+        </div>
+      </div>
+
+      {profile.target_performance_score !== null && (
+        <div className="mb-3 flex items-center gap-3 rounded-xl border border-border bg-muted/25 px-3.5 py-2.5">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25">Target</p>
+            <p className="text-[12px] font-medium text-foreground/60">{profile.target_performance_band}</p>
+          </div>
+          <span className="shrink-0 text-xs text-foreground/20">→</span>
+          <div className="min-w-0 flex-1 text-right">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25">Current</p>
+            <p className={`text-[12px] font-medium ${
+              profile.on_track_status === 'on_track'          ? 'text-emerald-400'
+              : profile.on_track_status === 'approaching_target' ? 'text-sky-400'
+              : profile.on_track_status === 'behind_target'      ? 'text-amber-400'
+              : profile.on_track_status === 'needs_urgent_focus' ? 'text-red-400'
+              : 'text-foreground/40'
+            }`}>
+              {profile.current_performance_band}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <p className="mb-3 text-[12.5px] leading-relaxed text-foreground/48">
+        {profile.honest_feedback_message}
+      </p>
+
+      {profile.has_enough_data && (
+        <div className="flex gap-2">
+          {metricPills.map(({ label, sub, color }) => (
+            <div key={sub} className={`flex-1 rounded-lg border px-2 py-1.5 text-center ${color}`}>
+              <p className="text-[11px] font-semibold capitalize">{label}</p>
+              <p className="text-[9px] text-foreground/25">{sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

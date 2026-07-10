@@ -18,6 +18,9 @@ import type { ConceptIntelligence, DocumentIntelligence } from '@/types/studentI
 import type { StudyPlan } from '@/types/studyPlan'
 import { getStudentKnowledgeTwin } from '@/app/actions/studentKnowledgeTwin'
 import type { StudentKnowledgeTwin } from '@/types/studentKnowledgeTwin'
+import type { AcademicProfile, StudyPreferences } from '@/types/user'
+import { computeStudentPerformanceProfile, DEFAULT_STUDY_PREFS } from '@/lib/studentPerformance'
+import type { StudentPerformanceProfile } from '@/types/studentPerformance'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -781,6 +784,32 @@ function buildTwinContext(twin: StudentKnowledgeTwin, intent: TutorIntent): stri
   return lines.join('\n')
 }
 
+// ── Performance profile context builder ──────────────────────────────────────
+
+function buildPerformanceContext(profile: StudentPerformanceProfile | null): string {
+  if (!profile || profile.on_track_status === 'not_enough_data') return ''
+
+  const statusLabel: Record<string, string> = {
+    on_track:           'On track',
+    approaching_target: 'Approaching target',
+    behind_target:      'Behind target',
+    needs_urgent_focus: 'URGENT — needs immediate focus',
+  }
+
+  const tutorAdjustment: Record<string, string> = {
+    on_track:           'Maintain challenge level. Acknowledge progress naturally. Fine-tune remaining weak areas.',
+    approaching_target: 'Be encouraging but specific. Name concrete steps to close the remaining gap.',
+    behind_target:      'Be honest and direct. Prioritise high-impact topics. Deepen coverage of weak areas. Avoid generic encouragement.',
+    needs_urgent_focus: 'Be direct and time-aware. Focus only on exam-critical content. Recommend specific immediate actions. Urgency without panic.',
+  }
+
+  const lines = ['STUDENT PERFORMANCE PROFILE:']
+  lines.push(`• Status: ${statusLabel[profile.on_track_status] ?? profile.on_track_status} | Risk: ${profile.risk_level} | Effort: ${profile.effort_level}`)
+  lines.push(`• Target: ${profile.target_performance_band} → Current: ${profile.current_performance_band} | Gap: ${profile.grade_gap}`)
+  lines.push(`• Tutor approach: ${tutorAdjustment[profile.on_track_status] ?? 'Be helpful and accurate.'}`)
+  return lines.join('\n')
+}
+
 // ── Main context dispatcher ───────────────────────────────────────────────────
 
 function buildContext(
@@ -928,7 +957,7 @@ export async function askTutor({
 
   // Fetch document data, intelligence, study plan, and global knowledge twin in parallel.
   // Twin uses .catch() so a failure there never blocks the primary tutor response.
-  const [docResult, analysisResult, intelligence, plan, twin] = await Promise.all([
+  const [docResult, analysisResult, intelligence, plan, twin, profileResult] = await Promise.all([
     supabase
       .from('documents')
       .select('user_id, title, extracted_text')
@@ -943,6 +972,7 @@ export async function askTutor({
     getStudentIntelligence(documentId),
     getStudyPlan(documentId),
     getStudentKnowledgeTwin().catch(() => EMPTY_TWIN),
+    supabase.from('user_profiles').select('academic_profile, study_preferences').eq('user_id', user.id).limit(1),
   ])
 
   if (!docResult.data || docResult.data.user_id !== user.id) {
@@ -950,6 +980,18 @@ export async function askTutor({
   }
 
   const doc = docResult.data
+
+  const profileRow = profileResult.data?.[0]
+  const academicForTutor = profileRow?.academic_profile as AcademicProfile | undefined
+  const performanceProfile: StudentPerformanceProfile | null =
+    academicForTutor?.subjects?.length && academicForTutor.subjects.some(s => s.target_grade)
+      ? computeStudentPerformanceProfile({
+          academic: academicForTutor,
+          prefs: (profileRow?.study_preferences as StudyPreferences | undefined) ?? DEFAULT_STUDY_PREFS,
+          twin,
+          intel: null,
+        })
+      : null
 
   const analysis = (analysisResult.data as DocumentAnalysis | null) ?? null
   const learningPath: LearningPathData | null = analysis?.learning_path ?? null
@@ -966,13 +1008,13 @@ export async function askTutor({
 
   const twinContext = buildTwinContext(twin, intent)
 
+  const performContext = buildPerformanceContext(performanceProfile)
+
   // meta_help uses its own system prompt that contains no teaching template,
   // so the model cannot fall back to "What happened / Correct idea / Check question".
   const systemMessage = intent === 'meta_help'
     ? `${META_HELP_SYSTEM_PROMPT}\n\n${context}`
-    : twinContext
-    ? `${SYSTEM_PROMPT}\n\n${context}\n\n${twinContext}`
-    : `${SYSTEM_PROMPT}\n\n${context}`
+    : [SYSTEM_PROMPT, context, twinContext, performContext].filter(Boolean).join('\n\n')
 
   // Last 8 messages = 4 turns of conversation context (enough to track check → ack → rephrase flow)
   const history = recentMessages.slice(-8).map(m => ({

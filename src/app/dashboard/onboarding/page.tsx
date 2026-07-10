@@ -12,20 +12,31 @@ export default async function OnboardingPage() {
 
   if (!user) redirect('/login')
 
+  // If onboarding already completed, send user to dashboard
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('onboarding_completed')
+    .eq('user_id', user.id)
+    .limit(1)
+
+  if (data?.[0]?.onboarding_completed === true) {
+    redirect('/dashboard')
+  }
+
   return (
-    <div className="flex flex-1 flex-col p-8 max-w-lg">
+    <div className="flex flex-1 flex-col p-8 max-w-2xl">
       <div className="mb-8">
-        <p className="mb-2 text-xs font-medium uppercase tracking-widest text-white/20">
-          Setup
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-foreground/25">
+          Personalisation setup
         </p>
-        <h1 className="text-xl font-semibold tracking-tight text-white">
-          Personalise MoLis
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">
+          Set up your MoLis profile
         </h1>
-        <p className="mt-1.5 text-sm text-white/35">
-          Help your AI operating system understand your goals and learning style.
+        <p className="mt-1.5 text-sm text-foreground/40 leading-6">
+          Help MoLis understand your goals, subjects, and learning style so it can personalise everything — notes, tutor, flashcards, and recommendations.
         </p>
       </div>
-      <OnboardingForm userId={user.id} />
+      <OnboardingForm />
     </div>
   )
 }
