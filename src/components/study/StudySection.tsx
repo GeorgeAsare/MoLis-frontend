@@ -5,12 +5,14 @@ import { fetchDocuments } from '@/lib/supabase/documents'
 import { StudyUploadForm } from '@/components/study/StudyUploadForm'
 import { DocumentList } from '@/components/study/DocumentList'
 import type { StudyDocument } from '@/types/document'
+import type { Subject } from '@/types/subject'
 
 interface Props {
   userId: string
+  subjects?: Subject[]
 }
 
-export function StudySection({ userId }: Props) {
+export function StudySection({ userId, subjects = [] }: Props) {
   const [documents, setDocuments] = useState<StudyDocument[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -40,7 +42,7 @@ export function StudySection({ userId }: Props) {
 
   return (
     <div className="flex flex-col gap-4">
-      <StudyUploadForm onUploadSuccess={loadDocuments} />
+      <StudyUploadForm subjects={subjects} onUploadSuccess={loadDocuments} />
       <DocumentList
         documents={documents}
         loading={loading}

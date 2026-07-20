@@ -18,6 +18,7 @@ import type {
   TranscriptDiagnostics,
   TranscriptQuality,
 } from '@/types/recordings'
+import type { Subject } from '@/types/subject'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ function extFromMime(mime: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function RecorderAgent({ initialRecordings }: { initialRecordings: Recording[] }) {
+export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { initialRecordings: Recording[]; initialSubjects?: Subject[] }) {
   const [state, setState]               = useState<RecorderState>('idle')
   const [seconds, setSeconds]           = useState(0)
   const [audioBlob, setAudioBlob]       = useState<Blob | null>(null)
@@ -167,6 +168,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null)
   const [title, setTitle]               = useState('')
   const [subject, setSubject]           = useState('')
+  const [subjectId, setSubjectId]       = useState<string | null>(null)
   const [error, setError]               = useState<string | null>(null)
   const [steps, setSteps]               = useState<ProcessingStep[]>([])
   const [result, setResult]             = useState<Recording | null>(null)
@@ -358,6 +360,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
         recordingId,
         title: title.trim(),
         subject: subject.trim(),
+        subject_id: subjectId,
         audio_path,
         duration_seconds: seconds,
         mime_type: mimeType,
@@ -391,6 +394,7 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
     setUploadedFileName(null)
     setTitle('')
     setSubject('')
+    setSubjectId(null)
     setError(null)
     setSeconds(0)
     if (!keepRecent) {
@@ -606,13 +610,31 @@ export function RecorderAgent({ initialRecordings }: { initialRecordings: Record
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-medium text-foreground/50">Subject / module</label>
-                  <input
-                    type="text"
-                    value={subject}
-                    onChange={e => setSubject(e.target.value)}
-                    placeholder="e.g. CS2001 — Object-Oriented Programming"
-                    className="rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/25 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/12"
-                  />
+                  {initialSubjects.length > 0 ? (
+                    <select
+                      value={subjectId ?? ''}
+                      onChange={e => {
+                        const id = e.target.value
+                        setSubjectId(id || null)
+                        const found = initialSubjects.find(s => s.id === id)
+                        setSubject(found?.name ?? '')
+                      }}
+                      className="rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/12"
+                    >
+                      <option value="">Unsorted</option>
+                      {initialSubjects.map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={e => setSubject(e.target.value)}
+                      placeholder="e.g. CS2001 — Object-Oriented Programming"
+                      className="rounded-xl border border-border bg-muted/30 px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground/25 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/12"
+                    />
+                  )}
                 </div>
               </div>
 

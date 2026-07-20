@@ -104,6 +104,7 @@ export interface Recording {
   user_id: string
   title: string
   subject: string | null
+  subject_id?: string | null
   audio_path: string | null
   audio_url: string | null
   transcript: string | null
@@ -124,6 +125,7 @@ export interface ProcessRecordingInput {
   recordingId: string
   title: string
   subject: string
+  subject_id: string | null
   audio_path: string
   duration_seconds: number
   mime_type: string

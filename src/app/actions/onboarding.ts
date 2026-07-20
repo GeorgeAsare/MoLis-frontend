@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import type { SaveOnboardingInput, StudentProfileRow } from '@/types/user'
+import { syncSubjectsCore } from '@/lib/subjectsSync'
 
 export async function saveOnboardingProfile(input: SaveOnboardingInput): Promise<{ success: true }> {
   const supabase = await createClient()
@@ -45,6 +46,13 @@ export async function saveOnboardingProfile(input: SaveOnboardingInput): Promise
       )
     }
     throw new Error(`Failed to save profile: ${error.message}`)
+  }
+
+  // Best-effort subject sync — never block onboarding completion on this
+  try {
+    await syncSubjectsCore()
+  } catch {
+    // subjects table may not exist yet; silently skip
   }
 
   return { success: true }

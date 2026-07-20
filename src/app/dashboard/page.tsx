@@ -4,6 +4,7 @@ import { FadeIn, SlideUp, StaggerContainer, StaggerItem, HoverLift } from '@/com
 import { NeuralOrb } from '@/components/ui/NeuralOrb'
 import { getDashboardIntelligence } from '@/app/actions/dashboardIntelligence'
 import { getStudentKnowledgeTwin } from '@/app/actions/studentKnowledgeTwin'
+import { getSubjects } from '@/app/actions/subjects'
 import { createClient } from '@/lib/supabase/server'
 import type { DigestActivity, DigestActivityType } from '@/types/studyDigest'
 import type { WeakConceptItem, WeakReason, RecommendedNextAction } from '@/types/dashboardIntelligence'
@@ -11,6 +12,7 @@ import type { StudentKnowledgeTwin } from '@/types/studentKnowledgeTwin'
 import type { StudentProfileRow, AcademicProfile, StudyPreferences } from '@/types/user'
 import { computeStudentPerformanceProfile, DEFAULT_STUDY_PREFS } from '@/lib/studentPerformance'
 import type { StudentPerformanceProfile } from '@/types/studentPerformance'
+import type { Subject } from '@/types/subject'
 
 export const metadata = {
   title: 'Dashboard — MoLis',
@@ -38,9 +40,10 @@ export default async function DashboardPage() {
   const profileRow = (profileRows?.[0] ?? null) as StudentProfileRow | null
 
   const name = user?.user_metadata?.full_name?.split(' ')[0] ?? 'there'
-  const [intel, twin] = await Promise.all([
+  const [intel, twin, subjects] = await Promise.all([
     getDashboardIntelligence(),
     getStudentKnowledgeTwin(),
+    getSubjects().catch((): Subject[] => []),
   ])
 
   const academicProfile = profileRow?.academic_profile as AcademicProfile | undefined
@@ -182,6 +185,34 @@ export default async function DashboardPage() {
                 </StaggerItem>
               ))}
             </StaggerContainer>
+
+            {/* Subjects */}
+            {subjects.length > 0 && (
+              <SlideUp delay={0.24}>
+                <div className="rounded-2xl border border-border bg-card px-5 py-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-[13px] font-semibold text-foreground/75">Subjects</p>
+                    <Link
+                      href="/dashboard/subjects"
+                      className="text-[11px] text-foreground/28 hover:text-foreground/55 transition-colors"
+                    >
+                      Manage →
+                    </Link>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {subjects.map(s => (
+                      <Link
+                        key={s.id}
+                        href={`/dashboard/subjects/${s.id}`}
+                        className="rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-foreground/60 transition-colors hover:border-primary/20 hover:bg-primary/[0.07] hover:text-foreground/85"
+                      >
+                        {s.name}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              </SlideUp>
+            )}
 
             {/* Recommended Next Action */}
             {nextAction && (

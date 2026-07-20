@@ -1055,6 +1055,18 @@ export async function processRecording(
     throw new Error('Not authorized: audio path does not belong to this user')
   }
 
+  if (input.subject_id) {
+    const { data: subjectCheck } = await supabase
+      .from('subjects')
+      .select('id')
+      .eq('id', input.subject_id)
+      .eq('user_id', user.id)
+      .single()
+    if (!subjectCheck) {
+      throw new Error('Not authorized: subject does not belong to this user.')
+    }
+  }
+
   const { error: insertError } = await supabase
     .from('recordings')
     .insert({
@@ -1062,6 +1074,7 @@ export async function processRecording(
       user_id: user.id,
       title: input.title.trim(),
       subject: input.subject.trim() || null,
+      subject_id: input.subject_id,
       audio_path: input.audio_path,
       duration_seconds: input.duration_seconds,
       status: 'processing',
@@ -1158,7 +1171,7 @@ export async function processRecording(
       await setStatus('analysis_failed')
       const { data: partial } = await supabase
         .from('recordings')
-        .select('id, user_id, title, subject, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at')
+        .select('id, user_id, title, subject, subject_id, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at')
         .eq('id', input.recordingId)
         .single()
       const userMsg = rawError
@@ -1260,7 +1273,7 @@ export async function retryAnalysis(recordingId: string): Promise<ProcessRecordi
       : 'Analysis failed again. Your transcript is still saved. Please try again in a moment.'
     const { data: partial } = await supabase
       .from('recordings')
-      .select('id, user_id, title, subject, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at')
+      .select('id, user_id, title, subject, subject_id, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at')
       .eq('id', recordingId)
       .single()
     return {
@@ -1310,7 +1323,7 @@ export async function getRecentRecordings(): Promise<Recording[]> {
   const { data, error } = await supabase
     .from('recordings')
     .select(
-      'id, user_id, title, subject, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at',
+      'id, user_id, title, subject, subject_id, audio_path, audio_url, transcript, key_terms, important_details, notes, summary, duration_seconds, status, transcription_model, analysis_model, created_at, updated_at',
     )
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })

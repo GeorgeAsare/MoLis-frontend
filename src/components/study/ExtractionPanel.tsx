@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { saveExtractedText } from '@/app/actions/extractText'
 import { analyzeDocument } from '@/app/actions/analyzeDocument'
@@ -119,10 +119,19 @@ export function ExtractionPanel({
   const supported = SUPPORTED.includes(fileType)
   const busy = phase === 'extracting' || phase === 'saving' || phase === 'analyzing'
 
-  // Auto-trigger analysis when text exists but analysis is missing (e.g. legacy docs,
-  // or first load after the feature was added)
+  // Ref guard: prevents React Strict Mode's double-invoke from launching duplicate
+  // extraction or analysis requests. Refs survive the remount cycle; state does not.
+  const hasAutoStartedRef = useRef(false)
+
   useEffect(() => {
-    if (initialExtractedText && !hasAnalysis) {
+    if (hasAutoStartedRef.current) return
+    hasAutoStartedRef.current = true
+
+    if (!initialExtractedText && signedUrl && supported) {
+      // New document: no text yet — start full extraction pipeline
+      void handleExtract()
+    } else if (initialExtractedText && !hasAnalysis) {
+      // Has text but no analysis (legacy doc or prior analysis failure)
       void runAnalysisOnly()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

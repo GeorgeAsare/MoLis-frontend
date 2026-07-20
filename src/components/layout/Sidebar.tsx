@@ -6,10 +6,11 @@ import { createClient } from '@/lib/supabase/client'
 import { motion, AnimatePresence } from 'motion/react'
 
 const navItems = [
-  { href: '/dashboard',       label: 'Home',   icon: HomeIcon },
-  { href: '/dashboard/study', label: 'Study',  icon: StudyIcon },
-  { href: '/dashboard/agents',label: 'Agents', icon: AgentsIcon },
-  { href: '/dashboard/memory',label: 'Memory', icon: MemoryIcon },
+  { href: '/dashboard',          label: 'Home',     icon: HomeIcon },
+  { href: '/dashboard/subjects', label: 'Subjects', icon: SubjectsIcon },
+  { href: '/dashboard/study',    label: 'Study',    icon: StudyIcon },
+  { href: '/dashboard/agents',   label: 'Agents',   icon: AgentsIcon },
+  { href: '/dashboard/memory',   label: 'Memory',   icon: MemoryIcon },
 ]
 
 export function Sidebar() {
@@ -157,6 +158,14 @@ function HomeIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
       <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+    </svg>
+  )
+}
+
+function SubjectsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 7.125C2.25 6.504 2.754 6 3.375 6h6c.621 0 1.125.504 1.125 1.125v3.75c0 .621-.504 1.125-1.125 1.125h-6a1.125 1.125 0 0 1-1.125-1.125v-3.75ZM14.25 8.625c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125v8.25c0 .621-.504 1.125-1.125 1.125h-5.25a1.125 1.125 0 0 1-1.125-1.125v-8.25ZM3.75 16.125c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125v2.25c0 .621-.504 1.125-1.125 1.125h-5.25a1.125 1.125 0 0 1-1.125-1.125v-2.25Z" />
     </svg>
   )
 }

@@ -6,7 +6,7 @@ export async function fetchDocuments(userId: string): Promise<StudyDocument[]> {
 
   const { data, error } = await supabase
     .from('documents')
-    .select('id, user_id, title, file_path, file_type, created_at')
+    .select('id, user_id, title, file_path, file_type, created_at, subject_id')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
 

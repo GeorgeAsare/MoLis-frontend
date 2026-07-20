@@ -6,4 +6,5 @@ export interface StudyDocument {
   file_type: string
   created_at: string
   extracted_text?: string | null
+  subject_id?: string | null
 }
