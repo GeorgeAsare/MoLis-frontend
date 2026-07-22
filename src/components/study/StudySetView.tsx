@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ExtractionPanel } from '@/components/study/ExtractionPanel'
 import { RevisionNotesPanel } from '@/components/study/RevisionNotesPanel'
@@ -106,8 +106,16 @@ export function StudySetView({
   initialTab,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>(validateTab(initialTab))
+  const [liveWeakTopics, setLiveWeakTopics] = useState<ConceptMastery[]>(weakTopics)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const tutorPanelRef = useRef<TutorPanelHandle>(null)
+
+  const handleWeakTopicsRefresh = useCallback((topics: ConceptMastery[]) => {
+    const weak = topics.filter(
+      (c) => c.review_count > 0 && (c.mastery_score < 50 || c.forgetting_risk === 'medium' || c.forgetting_risk === 'high'),
+    )
+    setLiveWeakTopics(weak)
+  }, [])
 
   function handleTabChange(tab: Tab) {
     setActiveTab(tab)
@@ -200,7 +208,7 @@ export function StudySetView({
               hasFlashcards={!!initialFlashcards}
               hasQuiz={!!initialQuiz}
               hasVisuals={!!initialVisuals}
-              weakTopicsCount={weakTopics.length}
+              weakTopicsCount={liveWeakTopics.length}
               analysis={initialAnalysis}
               studyPlan={initialStudyPlan}
               quizAttempt={initialQuizAttempt}
@@ -239,6 +247,7 @@ export function StudySetView({
               initialAttempt={initialQuizAttempt}
               analysis={initialAnalysis}
               onAskTutor={openTutorWithPrompt}
+              onWeakTopicsRefresh={handleWeakTopicsRefresh}
             />
           </div>
 
@@ -253,7 +262,7 @@ export function StudySetView({
           </div>
 
           <div className={activeTab !== 'weak-topics' ? 'hidden' : ''}>
-            <WeakTopicsTab weakTopics={weakTopics} onGoToQuiz={() => handleTabChange('quiz')} onAskTutor={openTutorWithPrompt} />
+            <WeakTopicsTab weakTopics={liveWeakTopics} onGoToQuiz={() => handleTabChange('quiz')} onAskTutor={openTutorWithPrompt} />
           </div>
 
           <div className={activeTab !== 'tutor' ? 'hidden' : 'flex-1 min-h-0 flex flex-col pt-4'}>

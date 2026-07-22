@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { generateQuiz } from '@/app/actions/quiz'
-import { recordConceptResult } from '@/app/actions/conceptMastery'
+import { recordConceptResult, getConceptMastery } from '@/app/actions/conceptMastery'
 import { startQuizAttempt, saveQuizAttempt } from '@/app/actions/quizAttempt'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type {
@@ -15,6 +15,7 @@ import type {
 } from '@/types/quiz'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { AnswerState, QuizAttempt } from '@/types/quizAttempt'
+import type { ConceptMastery } from '@/types/conceptMastery'
 import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ interface Props {
   initialAttempt?: QuizAttempt | null
   analysis?: DocumentAnalysis | null
   onAskTutor?: (prompt: string, mode?: TutorMode) => void
+  onWeakTopicsRefresh?: (topics: ConceptMastery[]) => void
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ function typeLabel(type: QuizQuestion['type']): string {
 
 // ── QuizPanel ─────────────────────────────────────────────────────────────────
 
-export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAttempt, onAskTutor }: Props) {
+export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAttempt, onAskTutor, onWeakTopicsRefresh }: Props) {
   const [phase, setPhase] = useState<Phase>(() => {
     if (!initialQuiz) return 'idle'
     if (attemptMatchesQuiz(initialAttempt, initialQuiz)) {
@@ -252,7 +254,12 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAt
             }),
           ),
         )
-          .then(() => setWeakTopicsSaved(true))
+          .then(() => {
+            setWeakTopicsSaved(true)
+            if (onWeakTopicsRefresh) {
+              getConceptMastery(documentId).then(onWeakTopicsRefresh).catch(() => {})
+            }
+          })
           .catch(() => {})
       }
     }
