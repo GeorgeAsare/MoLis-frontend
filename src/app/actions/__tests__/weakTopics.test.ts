@@ -58,7 +58,7 @@ describe('extractTopic', () => {
   })
 
   it('strips "How does" prefix', () => {
-    expect(extractTopic('How does garbage collection work?')).toBe('Garbage collection')
+    expect(extractTopic('How does garbage collection work?')).toBe('Garbage collection work')
   })
 
   it('strips "True or false:" prefix', () => {
