@@ -181,6 +181,7 @@ export function StudyUploadForm({ subjects = [], onUploadSuccess }: Props) {
         className="rounded-2xl"
       >
         <label
+          data-testid="study-upload-zone"
           className={[
             'relative flex cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-8 py-14 text-center transition-colors duration-250',
             busy ? 'pointer-events-none opacity-60' : '',

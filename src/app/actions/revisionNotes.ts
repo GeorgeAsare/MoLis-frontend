@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import { recordUsage } from '@/app/actions/recordUsage'
 import type { RevisionNote, RevisionNoteDefinition } from '@/types/revisionNotes'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
@@ -252,8 +253,10 @@ export async function generateRevisionNotes(
     .single()
 
   if (saveError || !saved) {
+    void recordUsage({ generation_type: 'revision_notes', document_id: documentId, success: false, error_type: 'save_failed', model: 'gpt-4o-mini' })
     throw new Error(saveError?.message ?? 'Failed to save revision notes')
   }
 
+  void recordUsage({ generation_type: 'revision_notes', document_id: documentId, success: true, model: 'gpt-4o-mini' })
   return saved as RevisionNote
 }

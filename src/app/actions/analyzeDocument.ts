@@ -2,6 +2,8 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import { recordUsage } from '@/app/actions/recordUsage'
+import { saveMemory } from '@/app/actions/userMemories'
 import type {
   DocumentAnalysis,
   ConceptGraph,
@@ -575,6 +577,17 @@ export async function analyzeDocument(documentId: string): Promise<DocumentAnaly
   }
 
   initConceptMastery(documentId).catch(() => {})
+
+  void recordUsage({ generation_type: 'analysis', document_id: documentId, success: true, model: 'gpt-4o-mini' })
+  void saveMemory({
+    source_agent: 'study',
+    source_entity_type: 'document',
+    source_entity_id: documentId,
+    category: 'activity',
+    content: `Analysed document: ${doc.title}`,
+    metadata: { document_id: documentId, subject_area: (saved as DocumentAnalysis).subject_area },
+    importance: 3,
+  })
 
   return saved as DocumentAnalysis
 }

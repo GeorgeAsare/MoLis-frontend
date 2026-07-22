@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
@@ -223,24 +224,21 @@ async function generateAndStoreImage(
   }
 }
 
-// ── Server Action ─────────────────────────────────────────────────────────────
+// ── Core generation (shared by server action and background job) ──────────────
 
-export async function generateVisuals(documentId: string): Promise<StudyVisualSet> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY is not set. Add it to your .env.local file.')
-  }
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error('Not authenticated')
-
+async function generateVisualsCore(
+  documentId: string,
+  userId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: SupabaseClient<any, 'public', any>,
+): Promise<StudyVisualSet> {
   const { data: doc } = await supabase
     .from('documents')
     .select('user_id, title, extracted_text')
     .eq('id', documentId)
     .single()
 
-  if (!doc || doc.user_id !== user.id) throw new Error('Not authorized')
+  if (!doc || doc.user_id !== userId) throw new Error('Not authorized')
 
   if (!doc.extracted_text?.trim()) {
     throw new Error('No extracted text found. Please extract text from the document first.')
@@ -250,14 +248,11 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
     .from('document_analysis')
     .select('*')
     .eq('document_id', documentId)
-    .eq('user_id', user.id)
+    .eq('user_id', userId)
     .maybeSingle()
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   const imageModel = getImageModel()
-  console.log('[visuals] starting_generation', { documentId, imageModel, promptModel: PROMPT_MODEL })
-
-  // ── Phase 1: identify visual topics + build image prompts ─────────────────
 
   const userPrompt = analysisRow
     ? buildPromptFromAnalysis(doc.title, analysisRow as DocumentAnalysis)
@@ -296,11 +291,10 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
   const prompts = safeVisuals(parsed.visuals)
 
   if (prompts.length === 0) {
-    // No visual topics detected — save empty set and return
     const { data: saved, error } = await supabase
       .from('study_visuals')
       .upsert(
-        { document_id: documentId, user_id: user.id, visuals: [], model: PROMPT_MODEL },
+        { document_id: documentId, user_id: userId, visuals: [], model: PROMPT_MODEL },
         { onConflict: 'document_id,user_id' },
       )
       .select()
@@ -309,41 +303,52 @@ export async function generateVisuals(documentId: string): Promise<StudyVisualSe
     return saved as StudyVisualSet
   }
 
-  console.log('[visuals] prompts_ready', { count: prompts.length, topics: prompts.map(p => p.topic) })
-
-  // ── Phase 2: generate actual images, upload to storage ───────────────────
-
   const generated: StudyVisualItem[] = []
   for (let i = 0; i < prompts.length; i++) {
     const result = await generateAndStoreImage(
-      openai, supabase, user.id, documentId, prompts[i], i, imageModel,
+      openai, supabase, userId, documentId, prompts[i], i, imageModel,
     )
     generated.push(result)
   }
-
-  const failedCount  = generated.filter(v => v.status === 'failed').length
-  const successCount = generated.filter(v => v.status === 'generated').length
-  console.log('[visuals] generation_complete', { successCount, failedCount })
-
-  // ── Persist ───────────────────────────────────────────────────────────────
 
   const { data: saved, error: saveError } = await supabase
     .from('study_visuals')
     .upsert(
       {
         document_id: documentId,
-        user_id:     user.id,
-        visuals:     generated,
-        model:       `${PROMPT_MODEL}+${imageModel}`,
+        user_id: userId,
+        visuals: generated,
+        model: `${PROMPT_MODEL}+${imageModel}`,
       },
       { onConflict: 'document_id,user_id' },
     )
     .select()
     .single()
 
-  if (saveError || !saved) {
-    throw new Error(saveError?.message ?? 'Failed to save visuals')
+  if (saveError || !saved) throw new Error(saveError?.message ?? 'Failed to save visuals')
+  return saved as StudyVisualSet
+}
+
+// ── Called from background job API route ──────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function generateVisualsForJob(documentId: string, userId: string, supabase: SupabaseClient<any, 'public', any>): Promise<StudyVisualSet> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not set.')
+  }
+  return generateVisualsCore(documentId, userId, supabase)
+}
+
+// ── Server Action ─────────────────────────────────────────────────────────────
+
+export async function generateVisuals(documentId: string): Promise<StudyVisualSet> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not set. Add it to your .env.local file.')
   }
 
-  return saved as StudyVisualSet
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Not authenticated')
+
+  return generateVisualsCore(documentId, user.id, supabase)
 }

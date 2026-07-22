@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import { recordUsage } from '@/app/actions/recordUsage'
 import type {
   Quiz,
   QuizQuestion,
@@ -315,8 +316,10 @@ export async function generateQuiz(documentId: string): Promise<Quiz> {
     .single()
 
   if (saveError || !saved) {
+    void recordUsage({ generation_type: 'quiz', document_id: documentId, success: false, error_type: 'save_failed', model: 'gpt-4o-mini' })
     throw new Error(saveError?.message ?? 'Failed to save quiz')
   }
 
+  void recordUsage({ generation_type: 'quiz', document_id: documentId, success: true, model: 'gpt-4o-mini' })
   return saved as Quiz
 }

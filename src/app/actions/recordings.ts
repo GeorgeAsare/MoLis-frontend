@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import { saveMemory } from '@/app/actions/userMemories'
 import type {
   AgentClassification,
   AgentInsight,
@@ -1391,6 +1392,18 @@ export async function createStudySetFromRecording(
   }
 
   if (!data) throw new Error('Failed to create Study Set.')
+
+  // Fire-and-forget memory event: track recording-to-study conversion
+  void saveMemory({
+    source_agent: 'recorder',
+    source_entity_type: 'recording',
+    source_entity_id: recordingId,
+    category: 'activity',
+    content: `Created study set from recording: ${rec.title}`,
+    metadata: { document_id: data.id, recording_id: recordingId },
+    importance: 4,
+  })
+
   return { documentId: data.id }
 }
 

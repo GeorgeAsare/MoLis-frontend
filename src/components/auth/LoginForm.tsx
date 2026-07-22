@@ -112,6 +112,7 @@ export function LoginForm() {
           required
           autoComplete="email"
           disabled={busy}
+          data-testid="email-input"
         />
         <Input
           id="password"
@@ -123,6 +124,7 @@ export function LoginForm() {
           required
           autoComplete="current-password"
           disabled={busy}
+          data-testid="password-input"
         />
 
         {error && (
@@ -154,6 +156,7 @@ export function LoginForm() {
           loading={busy}
           disabled={busy}
           className="w-full mt-1"
+          data-testid="login-submit"
         >
           {navigating ? 'Signing you in…' : 'Sign in'}
         </Button>

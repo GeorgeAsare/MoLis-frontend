@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
+import { recordUsage } from '@/app/actions/recordUsage'
 import type { FlashcardSet, FlashcardItem } from '@/types/flashcard'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
@@ -254,8 +255,10 @@ export async function generateFlashcards(documentId: string): Promise<FlashcardS
     .single()
 
   if (saveError || !saved) {
+    void recordUsage({ generation_type: 'flashcards', document_id: documentId, success: false, error_type: 'save_failed', model: 'gpt-4o-mini' })
     throw new Error(saveError?.message ?? 'Failed to save flashcards')
   }
 
+  void recordUsage({ generation_type: 'flashcards', document_id: documentId, success: true, model: 'gpt-4o-mini' })
   return saved as FlashcardSet
 }

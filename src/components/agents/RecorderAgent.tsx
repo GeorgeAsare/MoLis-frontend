@@ -1249,6 +1249,7 @@ function RecordingResults({
           ) : (
             <button
               onClick={handleConvert}
+              data-testid="send-to-study-btn"
               className="rounded-xl border border-primary/25 bg-primary/[0.08] px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.14]"
             >
               Send to Study Agent
