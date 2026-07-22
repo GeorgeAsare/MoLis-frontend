@@ -6,7 +6,7 @@ export async function fetchDocuments(userId: string): Promise<StudyDocument[]> {
 
   const { data, error } = await supabase
     .from('documents')
-    .select('id, user_id, title, file_path, file_type, created_at, subject_id')
+    .select('id, user_id, title, file_path, file_type, created_at, subject_id, source_recording_id')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
 
@@ -14,15 +14,16 @@ export async function fetchDocuments(userId: string): Promise<StudyDocument[]> {
   return data ?? []
 }
 
-export async function deleteDocument(id: string, filePath: string): Promise<void> {
+export async function deleteDocument(id: string, filePath: string | null): Promise<void> {
   const supabase = createClient()
 
-  // Remove the file from Storage first so we never leave orphaned files
-  const { error: storageError } = await supabase.storage
-    .from('study-documents')
-    .remove([filePath])
+  if (filePath) {
+    const { error: storageError } = await supabase.storage
+      .from('study-documents')
+      .remove([filePath])
 
-  if (storageError) throw new Error(storageError.message)
+    if (storageError) throw new Error(storageError.message)
+  }
 
   const { error: dbError } = await supabase
     .from('documents')

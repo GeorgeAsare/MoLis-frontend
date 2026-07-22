@@ -35,18 +35,16 @@ export default async function StudySetPage({
 
   const { data: doc, error } = await supabase
     .from('documents')
-    .select('id, user_id, title, file_path, file_type, created_at, extracted_text')
+    .select('id, user_id, title, file_path, file_type, created_at, extracted_text, source_type')
     .eq('id', id)
     .single()
 
   if (error || !doc) notFound()
   if (doc.user_id !== user.id) notFound()
 
-  const { data: signedData } = await supabase.storage
-    .from('study-documents')
-    .createSignedUrl(doc.file_path, 3600)
-
-  const signedUrl = signedData?.signedUrl ?? null
+  const signedUrl = doc.file_path
+    ? ((await supabase.storage.from('study-documents').createSignedUrl(doc.file_path, 3600)).data?.signedUrl ?? null)
+    : null
 
   // Fetch all study content in parallel
   const [
@@ -130,9 +128,10 @@ export default async function StudySetPage({
         id: doc.id,
         title: doc.title,
         file_type: doc.file_type,
-        file_path: doc.file_path,
+        file_path: doc.file_path ?? null,
         created_at: doc.created_at,
         extracted_text: doc.extracted_text ?? null,
+        source_type: (doc as { source_type?: string | null }).source_type ?? null,
       }}
       signedUrl={signedUrl}
       initialNotes={(notesResult.data as RevisionNote | null) ?? null}

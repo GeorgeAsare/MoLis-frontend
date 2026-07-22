@@ -1333,6 +1333,67 @@ export async function getRecentRecordings(): Promise<Recording[]> {
   return (data ?? []) as Recording[]
 }
 
+export async function createStudySetFromRecording(
+  recordingId: string,
+): Promise<{ documentId: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Not authenticated')
+
+  const { data: rec, error: fetchError } = await supabase
+    .from('recordings')
+    .select('id, user_id, title, transcript, subject_id, status')
+    .eq('id', recordingId)
+    .eq('user_id', user.id)
+    .single()
+
+  if (fetchError || !rec) throw new Error('Recording not found.')
+  if (rec.status !== 'complete') throw new Error('Only complete recordings can be converted to a Study Set.')
+  if (!rec.transcript) throw new Error('No transcript available for this recording.')
+
+  // Idempotency: return existing document if already converted
+  const { data: existing } = await supabase
+    .from('documents')
+    .select('id')
+    .eq('source_recording_id', recordingId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (existing) return { documentId: existing.id }
+
+  const { data, error } = await supabase
+    .from('documents')
+    .insert({
+      user_id: user.id,
+      title: rec.title as string,
+      file_path: null,
+      file_type: 'transcript',
+      extracted_text: rec.transcript as string,
+      subject_id: (rec.subject_id as string | null) ?? null,
+      source_type: 'recording',
+      source_recording_id: recordingId,
+    })
+    .select('id')
+    .single()
+
+  if (error) {
+    // Handle race condition: duplicate insert hit the partial unique index
+    if (error.code === '23505') {
+      const { data: dup } = await supabase
+        .from('documents')
+        .select('id')
+        .eq('source_recording_id', recordingId)
+        .eq('user_id', user.id)
+        .single()
+      if (dup) return { documentId: dup.id }
+    }
+    throw new Error(error.message)
+  }
+
+  if (!data) throw new Error('Failed to create Study Set.')
+  return { documentId: data.id }
+}
+
 export async function deleteRecording(recordingId: string): Promise<void> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

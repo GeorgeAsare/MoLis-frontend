@@ -92,6 +92,7 @@ interface Props {
   signedUrl: string | null
   initialExtractedText: string | null
   hasAnalysis: boolean
+  sourceType?: string | null
 }
 
 export function ExtractionPanel({
@@ -100,6 +101,7 @@ export function ExtractionPanel({
   signedUrl,
   initialExtractedText,
   hasAnalysis,
+  sourceType,
 }: Props) {
   const router = useRouter()
 
@@ -202,7 +204,14 @@ export function ExtractionPanel({
       <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
         <div className="flex items-center gap-2">
           <ExtractIcon className="h-4 w-4 text-foreground/30" />
-          <span className="text-sm font-medium text-foreground/70">Text Extraction & Analysis</span>
+          <span className="text-sm font-medium text-foreground/70">
+            {sourceType === 'recording' ? 'Transcript Analysis' : 'Text Extraction & Analysis'}
+          </span>
+          {sourceType === 'recording' && (
+            <span className="rounded-full border border-primary/20 bg-primary/[0.07] px-2 py-0.5 text-[10px] font-medium text-primary/60">
+              From Lecture Recorder
+            </span>
+          )}
         </div>
         <StatusBadge phase={phase} />
       </div>

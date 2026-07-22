@@ -28,9 +28,10 @@ export interface StudyDoc {
   id: string
   title: string
   file_type: string
-  file_path: string
+  file_path: string | null
   created_at: string
   extracted_text: string | null
+  source_type?: string | null
 }
 
 interface Props {
@@ -74,6 +75,7 @@ function fileTypeLabel(mimeType: string): string {
     'text/plain': 'Text',
     'application/vnd.ms-powerpoint': 'PowerPoint',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+    'transcript': 'Lecture Recording',
   }
   return map[mimeType] ?? (mimeType.split('/')[1]?.toUpperCase() || 'File')
 }
@@ -396,6 +398,7 @@ function OverviewTab({
           signedUrl={signedUrl}
           initialExtractedText={doc.extracted_text ?? null}
           hasAnalysis={!!analysis}
+          sourceType={doc.source_type}
         />
         {/* Analysis metadata card */}
         {analysis && (

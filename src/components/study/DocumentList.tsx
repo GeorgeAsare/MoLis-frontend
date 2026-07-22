@@ -23,6 +23,7 @@ function fileTypeLabel(mimeType: string): string {
     'text/plain': 'Text',
     'application/vnd.ms-powerpoint': 'PowerPoint',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+    'transcript': 'Lecture Recording',
   }
   return map[mimeType] ?? (mimeType.split('/')[1]?.toUpperCase() || 'File')
 }

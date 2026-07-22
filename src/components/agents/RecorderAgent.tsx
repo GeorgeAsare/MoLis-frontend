@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { processRecording, deleteRecording, retryAnalysis } from '@/app/actions/recordings'
+import { processRecording, deleteRecording, retryAnalysis, createStudySetFromRecording } from '@/app/actions/recordings'
 import type {
   AgentClassification,
   AgentInsight,
@@ -159,7 +159,15 @@ function extFromMime(mime: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { initialRecordings: Recording[]; initialSubjects?: Subject[] }) {
+export function RecorderAgent({
+  initialRecordings,
+  initialSubjects = [],
+  initialStudyDocIds = {},
+}: {
+  initialRecordings: Recording[]
+  initialSubjects?: Subject[]
+  initialStudyDocIds?: Record<string, string>
+}) {
   const [state, setState]               = useState<RecorderState>('idle')
   const [seconds, setSeconds]           = useState(0)
   const [audioBlob, setAudioBlob]       = useState<Blob | null>(null)
@@ -175,6 +183,7 @@ export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { ini
   const [insight, setInsight]           = useState<AgentInsight | null>(null)
   const [recordings, setRecordings]     = useState<Recording[]>(initialRecordings)
   const [activeTab, setActiveTab]       = useState<'notes' | 'terms' | 'details' | 'transcript'>('notes')
+  const [studyDocIds, setStudyDocIds]   = useState<Map<string, string>>(() => new Map(Object.entries(initialStudyDocIds)))
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef        = useRef<Blob[]>([])
@@ -402,6 +411,10 @@ export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { ini
       setInsight(null)
     }
     setSteps([])
+  }
+
+  function handleStudyDocCreated(recordingId: string, docId: string) {
+    setStudyDocIds(prev => new Map(prev).set(recordingId, docId))
   }
 
   async function handleDeleteRecording(id: string) {
@@ -748,6 +761,8 @@ export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { ini
               activeTab={activeTab}
               onTabChange={setActiveTab}
               onNewRecording={resetToIdle}
+              studyDocId={studyDocIds.get(result.id) ?? null}
+              onStudyDocCreated={(docId) => handleStudyDocCreated(result.id, docId)}
             />
           )}
 
@@ -765,6 +780,7 @@ export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { ini
                   key={rec.id}
                   rec={rec}
                   isActive={result?.id === rec.id}
+                  studyDocId={studyDocIds.get(rec.id) ?? null}
                   onOpen={() => {
                     if (rec.status === 'complete') {
                       setResult(rec)
@@ -793,19 +809,42 @@ export function RecorderAgent({ initialRecordings, initialSubjects = [] }: { ini
 
 // ── RecordingResults ──────────────────────────────────────────────────────────
 
+type ConversionPhase = 'idle' | 'converting' | 'done' | 'error'
+
 function RecordingResults({
   recording,
   insight,
   activeTab,
   onTabChange,
   onNewRecording,
+  studyDocId,
+  onStudyDocCreated,
 }: {
   recording: Recording
   insight: AgentInsight
   activeTab: 'notes' | 'terms' | 'details' | 'transcript'
   onTabChange: (tab: 'notes' | 'terms' | 'details' | 'transcript') => void
   onNewRecording: () => void
+  studyDocId: string | null
+  onStudyDocCreated: (docId: string) => void
 }) {
+  const [conversionPhase, setConversionPhase] = useState<ConversionPhase>(studyDocId ? 'done' : 'idle')
+  const [conversionError, setConversionError] = useState<string | null>(null)
+  const [resolvedDocId, setResolvedDocId] = useState<string | null>(studyDocId)
+
+  async function handleConvert() {
+    setConversionPhase('converting')
+    setConversionError(null)
+    try {
+      const { documentId } = await createStudySetFromRecording(recording.id)
+      setResolvedDocId(documentId)
+      onStudyDocCreated(documentId)
+      setConversionPhase('done')
+    } catch (err) {
+      setConversionError(err instanceof Error ? err.message : 'Conversion failed. Please try again.')
+      setConversionPhase('error')
+    }
+  }
   const notes = recording.notes as RecordingNotes | null
   const classification = notes?.agent_classification as AgentClassification | undefined
   const diagnostics = notes?.transcript_diagnostics as TranscriptDiagnostics | undefined
@@ -1180,22 +1219,42 @@ function RecordingResults({
       </div>
 
       {/* Footer actions */}
-      <div className="flex items-center gap-3 pt-2 border-t border-border/40">
-        <button
-          onClick={onNewRecording}
-          className="rounded-xl border border-border bg-muted/30 px-4 py-2 text-sm text-foreground/50 transition-colors hover:text-foreground/75"
-        >
-          New recording
-        </button>
-        <div className="flex-1" />
-        <button
-          disabled
-          title="Coming next: convert this lecture into a study set with flashcards, quiz, visuals, and tutor context."
-          className="rounded-xl border border-border/50 bg-muted/20 px-4 py-2 text-sm text-foreground/20 cursor-not-allowed"
-        >
-          Send to Study Agent
-          <span className="ml-2 text-[10px] text-foreground/20">· coming soon</span>
-        </button>
+      <div className="flex flex-col gap-2 pt-2 border-t border-border/40">
+        {conversionError && (
+          <p className="text-xs text-red-400/80">{conversionError}</p>
+        )}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onNewRecording}
+            className="rounded-xl border border-border bg-muted/30 px-4 py-2 text-sm text-foreground/50 transition-colors hover:text-foreground/75"
+          >
+            New recording
+          </button>
+          <div className="flex-1" />
+          {conversionPhase === 'done' && resolvedDocId ? (
+            <a
+              href={`/dashboard/study/${resolvedDocId}`}
+              className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
+            >
+              Open Study Set →
+            </a>
+          ) : conversionPhase === 'converting' ? (
+            <button
+              disabled
+              className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/[0.06] px-4 py-2 text-sm text-primary/50 cursor-not-allowed"
+            >
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/40 border-t-transparent" />
+              Creating Study Set…
+            </button>
+          ) : (
+            <button
+              onClick={handleConvert}
+              className="rounded-xl border border-primary/25 bg-primary/[0.08] px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.14]"
+            >
+              Send to Study Agent
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -1206,12 +1265,14 @@ function RecordingResults({
 function RecentRecordingRow({
   rec,
   isActive,
+  studyDocId,
   onOpen,
   onRetry,
   onDelete,
 }: {
   rec: Recording
   isActive: boolean
+  studyDocId: string | null
   onOpen: () => void
   onRetry: () => void
   onDelete: () => void
@@ -1272,12 +1333,23 @@ function RecentRecordingRow({
         </div>
       </div>
       {rec.status === 'complete' && (
-        <button
-          onClick={onOpen}
-          className="shrink-0 text-xs text-foreground/35 hover:text-foreground/65 transition-colors"
-        >
-          Open
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {studyDocId && (
+            <a
+              href={`/dashboard/study/${studyDocId}`}
+              className="text-xs text-primary/60 hover:text-primary/90 transition-colors font-medium"
+              title="Open Study Set"
+            >
+              Study Set
+            </a>
+          )}
+          <button
+            onClick={onOpen}
+            className="text-xs text-foreground/35 hover:text-foreground/65 transition-colors"
+          >
+            Open
+          </button>
+        </div>
       )}
       {rec.status === 'analysis_failed' && (
         <button
