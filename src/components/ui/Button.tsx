@@ -7,6 +7,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'violet' | 'secondary' | 'ghost' | 'danger'
   size?: 'sm' | 'md' | 'lg'
   loading?: boolean
+  'data-testid'?: string
 }
 
 export function Button({
@@ -18,6 +19,7 @@ export function Button({
   className = '',
   onClick,
   type,
+  'data-testid': dataTestId,
 }: ButtonProps) {
   const base = [
     'relative inline-flex items-center justify-center font-medium select-none',
@@ -51,6 +53,7 @@ export function Button({
       onClick={onClick as React.MouseEventHandler<HTMLButtonElement>}
       className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
       disabled={disabled || loading}
+      data-testid={dataTestId}
       whileHover={disabled || loading ? undefined : { scale: 1.015 }}
       whileTap={disabled || loading ? undefined : { scale: 0.97 }}
       transition={{ duration: 0.12, ease: [0.22, 1, 0.36, 1] }}
