@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS user_memories (
 
   CONSTRAINT user_memories_category_check
     CHECK (category IN (
-      'preference', 'goal', 'knowledge', 'weakness', 'activity', 'decision', 'context'
+      'activity', 'knowledge', 'preference', 'performance', 'engagement'
     )),
   CONSTRAINT user_memories_importance_check
     CHECK (importance BETWEEN 1 AND 10),
