@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { generateFlashcards } from '@/app/actions/flashcards'
 import { recordConceptResult } from '@/app/actions/conceptMastery'
 import { saveFlashcardProgress } from '@/app/actions/flashcardProgress'
+import { saveMemory } from '@/app/actions/userMemories'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { FlashcardSet, FlashcardItem } from '@/types/flashcard'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
@@ -87,6 +88,8 @@ export function FlashcardsPanel({
     return 0
   })
   const [flipped, setFlipped] = useState(false)
+  // Tracks completed sessions within this page load — resets on reload by design
+  const sessionCountRef = useRef(0)
   const [reviewLearningOnly, setReviewLearningOnly] = useState<boolean>(() => {
     if (hasValidProgress(initialProgress, initialFlashcards)) {
       return initialProgress!.review_learning_only
@@ -201,13 +204,39 @@ export function FlashcardsPanel({
     const isLast = currentIndex >= cards.length - 1
     if (isLast) {
       setPhase('done')
+      const completedAt = new Date().toISOString()
       saveFlashcardProgress(documentId, {
         card_statuses: next,
         current_index: currentIndex,
         phase: 'done',
         review_learning_only: reviewLearningOnly,
-        completed_at: new Date().toISOString(),
+        completed_at: completedAt,
       }).catch(() => {})
+
+      // Infer study format preference after ≥3 completed sessions
+      sessionCountRef.current += 1
+      const knownCount = next.filter(s => s === 'known').length
+      const learningCount = next.filter(s => s === 'learning').length
+      const totalCards = next.length
+      if (sessionCountRef.current >= 3) {
+        void saveMemory({
+          source_agent: 'flashcard',
+          source_entity_type: 'document',
+          source_entity_id: documentId,
+          category: 'preference',
+          content: 'Prefers flashcard study format for active recall practice',
+          metadata: {
+            document_id: documentId,
+            sessions_completed: sessionCountRef.current,
+            last_session_known: knownCount,
+            last_session_learning: learningCount,
+            last_session_total: totalCards,
+            completed_at: completedAt,
+          },
+          importance: 5,
+          confidence: 7,
+        })
+      }
     } else {
       const newIndex = currentIndex + 1
       setCurrentIndex(newIndex)

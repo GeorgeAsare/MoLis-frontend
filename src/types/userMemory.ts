@@ -1,4 +1,4 @@
-export type MemoryCategory = 'preference' | 'goal' | 'knowledge' | 'weakness' | 'activity' | 'decision' | 'context'
+export type MemoryCategory = 'activity' | 'knowledge' | 'preference' | 'performance' | 'engagement'
 
 export interface UserMemory {
   id: string

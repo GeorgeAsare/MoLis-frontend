@@ -1,15 +1,34 @@
 'use client'
 
-import { useRef, useState } from 'react'
-import { generateVisuals } from '@/app/actions/visuals'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getActiveJobForDocument } from '@/app/actions/generationJobs'
+import { createClient } from '@/lib/supabase/client'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
+import type { GenerationJob } from '@/types/generationJob'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Phase = 'idle' | 'generating' | 'done' | 'error'
+type Phase =
+  | 'idle'       // no visuals, no active job
+  | 'checking'   // on mount, fetching active job status
+  | 'queued'     // job created, not yet started
+  | 'processing' // actively generating
+  | 'completed'  // visuals available
+  | 'failed'     // job failed — show error + retry
+  | 'cancelled'  // cancelled — show retry
+  | 'stale'      // processing >10 min — treat as failed
+
+const STALE_THRESHOLD_MS = 10 * 60 * 1000  // 10 minutes
+const POLL_INTERVAL_MS = 3_000
+
+function isStale(job: GenerationJob): boolean {
+  if (job.status !== 'processing') return false
+  const started = job.started_at ? new Date(job.started_at).getTime() : new Date(job.created_at).getTime()
+  return Date.now() - started > STALE_THRESHOLD_MS
+}
 
 interface Props {
   documentId: string
@@ -22,27 +41,145 @@ interface Props {
 // ── VisualsPanel ──────────────────────────────────────────────────────────────
 
 export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onAskTutor }: Props) {
-  const [phase, setPhase]         = useState<Phase>(initialVisuals ? 'done' : 'idle')
-  const [visuals, setVisuals]     = useState<StudyVisualSet | null>(initialVisuals)
-  const [errorMessage, setError]  = useState<string | null>(null)
-  const phaseRef = useRef(phase)
+  // Completed visuals fetched from DB (initially from server props, refreshed after job completes)
+  const [visuals, setVisuals] = useState<StudyVisualSet | null>(initialVisuals)
+  const [phase, setPhase] = useState<Phase>(initialVisuals ? 'completed' : 'checking')
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  async function triggerGenerate() {
-    if (phaseRef.current === 'generating') return
-    phaseRef.current = 'generating'
-    setPhase('generating')
-    setError(null)
-    try {
-      const result = await generateVisuals(documentId)
-      setVisuals(result)
-      phaseRef.current = 'done'
-      setPhase('done')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Visual generation failed')
-      phaseRef.current = 'error'
-      setPhase('error')
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
     }
   }
+
+  // Fetch fresh visuals from Supabase after a job completes
+  const refreshVisuals = useCallback(async () => {
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('study_visuals')
+      .select('*')
+      .eq('document_id', documentId)
+      .maybeSingle()
+    if (data) setVisuals(data as StudyVisualSet)
+  }, [documentId])
+
+  // Poll job status from the API route
+  const pollJobStatus = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/jobs/status/${id}`)
+      if (!res.ok) {
+        // Job not found — stop polling
+        stopPolling()
+        setPhase('failed')
+        setErrorMessage('Job status could not be retrieved.')
+        return
+      }
+      const job = (await res.json()) as GenerationJob
+
+      if (isStale(job)) {
+        stopPolling()
+        setPhase('stale')
+        setErrorMessage('Generation timed out after 10 minutes. Try again.')
+        return
+      }
+
+      if (job.status === 'queued') {
+        setPhase('queued')
+      } else if (job.status === 'processing') {
+        setPhase('processing')
+      } else if (job.status === 'completed') {
+        stopPolling()
+        await refreshVisuals()
+        setPhase('completed')
+      } else if (job.status === 'failed') {
+        stopPolling()
+        setPhase('failed')
+        setErrorMessage(job.error ?? 'Visual generation failed. Please try again.')
+      } else if (job.status === 'cancelled') {
+        stopPolling()
+        setPhase('cancelled')
+      }
+    } catch {
+      // Network error — keep polling, don't crash
+    }
+  }, [refreshVisuals])
+
+  function startPolling(id: string) {
+    stopPolling()
+    void pollJobStatus(id)
+    pollRef.current = setInterval(() => void pollJobStatus(id), POLL_INTERVAL_MS)
+  }
+
+  // On mount: check for any active job, or skip to idle/completed
+  useEffect(() => {
+    if (initialVisuals) return // already have visuals from SSR
+
+    let cancelled = false
+    void getActiveJobForDocument(documentId, 'visuals').then(job => {
+      if (cancelled) return
+      if (!job) {
+        setPhase('idle')
+        return
+      }
+
+      setJobId(job.id)
+
+      if (isStale(job)) {
+        setPhase('stale')
+        setErrorMessage('A previous generation timed out. Try again.')
+        return
+      }
+
+      if (job.status === 'queued' || job.status === 'processing') {
+        setPhase(job.status)
+        startPolling(job.id)
+      } else if (job.status === 'completed') {
+        // Job completed but visuals not in SSR — fetch them
+        void refreshVisuals().then(() => setPhase('completed'))
+      } else {
+        setPhase('idle')
+      }
+    })
+
+    return () => {
+      cancelled = true
+      stopPolling()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId])
+
+  // Cleanup polling on unmount
+  useEffect(() => () => stopPolling(), [])
+
+  async function handleGenerate() {
+    if (phase === 'queued' || phase === 'processing') return
+    setPhase('queued')
+    setErrorMessage(null)
+
+    try {
+      const res = await fetch('/api/jobs/visuals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId }),
+      })
+      if (!res.ok) {
+        const body = (await res.json()) as { error?: string }
+        throw new Error(body.error ?? `Request failed (HTTP ${res.status})`)
+      }
+      const { jobId: newJobId } = (await res.json()) as { jobId: string }
+      setJobId(newJobId)
+      startPolling(newJobId)
+    } catch (err) {
+      setPhase('failed')
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to start generation')
+    }
+  }
+
+  const isActive = phase === 'queued' || phase === 'processing'
+  const canRetry = phase === 'failed' || phase === 'cancelled' || phase === 'stale'
 
   return (
     <div className="flex flex-col gap-5">
@@ -55,10 +192,11 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
             AI-generated educational diagrams from your document
           </p>
         </div>
-        {phase === 'done' && visuals && visuals.visuals.length > 0 && (
+        {phase === 'completed' && visuals && visuals.visuals.length > 0 && (
           <button
-            onClick={triggerGenerate}
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55"
+            onClick={handleGenerate}
+            disabled={isActive}
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55 disabled:opacity-40"
           >
             <RegenerateIcon className="h-3 w-3" />
             Regenerate
@@ -67,21 +205,30 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
       </div>
 
       {/* States */}
-      {phase === 'idle' && (
-        <IdleState hasExtractedText={hasExtractedText} onGenerate={triggerGenerate} />
+
+      {(phase === 'checking' || phase === 'idle') && (
+        phase === 'checking'
+          ? <div className="h-40 flex items-center justify-center"><span className="h-4 w-4 animate-spin rounded-full border border-foreground/20 border-t-transparent" /></div>
+          : <IdleState hasExtractedText={hasExtractedText} onGenerate={handleGenerate} />
       )}
 
-      {phase === 'error' && (
+      {isActive && (
+        <ActiveJobState phase={phase} jobId={jobId} />
+      )}
+
+      {canRetry && (
         <div className="flex flex-col gap-4">
           <div className="flex items-start gap-2.5 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
             <WarningIcon className="mt-0.5 h-4 w-4 shrink-0 text-red-400/70" />
             <div className="flex flex-col gap-0.5">
-              <p className="text-sm font-medium text-red-400/90">Generation failed</p>
-              <p className="text-xs leading-relaxed text-red-400/65">{errorMessage}</p>
+              <p className="text-sm font-medium text-red-400/90">
+                {phase === 'cancelled' ? 'Generation cancelled' : 'Generation failed'}
+              </p>
+              {errorMessage && <p className="text-xs leading-relaxed text-red-400/65">{errorMessage}</p>}
             </div>
           </div>
           <button
-            onClick={triggerGenerate}
+            onClick={handleGenerate}
             className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
           >
             Try Again
@@ -89,26 +236,54 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
         </div>
       )}
 
-      {phase === 'generating' && <GeneratingSkeleton />}
-
-      {phase === 'done' && visuals && (
+      {phase === 'completed' && visuals && (
         visuals.visuals.length === 0
-          ? <NoVisualsState onRegenerate={triggerGenerate} />
-          : <VisualsGrid visuals={visuals.visuals} onRegenerate={triggerGenerate} onAskTutor={onAskTutor} />
+          ? <NoVisualsState onRegenerate={handleGenerate} />
+          : <VisualsGrid visuals={visuals.visuals} onRegenerate={handleGenerate} onAskTutor={onAskTutor} />
       )}
+    </div>
+  )
+}
+
+// ── ActiveJobState ─────────────────────────────────────────────────────────────
+
+function ActiveJobState({ phase, jobId }: { phase: Phase; jobId: string | null }) {
+  const label = phase === 'queued' ? 'Generation queued…' : 'Generating educational diagram…'
+  const sub = phase === 'queued'
+    ? 'Starting up · you can navigate away safely'
+    : 'This can take 1–3 minutes · you can navigate away safely'
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center gap-3 rounded-xl border border-primary/15 bg-primary/[0.04] px-4 py-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <p className="text-sm font-medium text-foreground/65">{label}</p>
+          <p className="text-xs text-foreground/25">{sub}</p>
+          {jobId && (
+            <p className="text-[10px] font-mono text-foreground/15">job:{jobId.slice(0, 8)}</p>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4">
+        <div className="flex flex-col gap-3 overflow-hidden rounded-2xl border border-border bg-muted/30">
+          <Skeleton className="h-48 w-full rounded-none" />
+          <div className="flex flex-col gap-2 p-4">
+            <Skeleton className="h-4 w-2/3 rounded-full" />
+            <Skeleton className="h-3 w-full rounded-full" />
+            <Skeleton className="h-3 w-4/5 rounded-full" />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
 
 // ── IdleState ─────────────────────────────────────────────────────────────────
 
-function IdleState({
-  hasExtractedText,
-  onGenerate,
-}: {
-  hasExtractedText: boolean
-  onGenerate: () => void
-}) {
+function IdleState({ hasExtractedText, onGenerate }: { hasExtractedText: boolean; onGenerate: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/30 py-16 text-center">
       <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/20 bg-primary/[0.08]">
@@ -121,7 +296,9 @@ function IdleState({
           : 'Extract text from your document first, then generate visual diagrams.'}
       </p>
       {hasExtractedText && (
-        <p className="mt-2 text-[10px] text-foreground/20">Generation takes 30–90 seconds</p>
+        <p className="mt-2 text-[10px] text-foreground/20">
+          Generation takes 30–90 seconds · runs in the background
+        </p>
       )}
       <button
         onClick={onGenerate}
@@ -145,7 +322,8 @@ function NoVisualsState({ onRegenerate }: { onRegenerate: () => void }) {
       </div>
       <p className="text-sm font-medium text-foreground/40">No visual topics detected</p>
       <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-foreground/20">
-        This document doesn&apos;t appear to contain concepts that benefit from diagrams. Visual aids work best for anatomy, networks, OOP hierarchies, circuits, and data structures.
+        This document doesn&apos;t appear to contain concepts that benefit from diagrams.
+        Visual aids work best for anatomy, networks, OOP hierarchies, circuits, and data structures.
       </p>
       <button
         onClick={onRegenerate}
@@ -153,39 +331,6 @@ function NoVisualsState({ onRegenerate }: { onRegenerate: () => void }) {
       >
         Try again
       </button>
-    </div>
-  )
-}
-
-// ── GeneratingSkeleton ────────────────────────────────────────────────────────
-
-function GeneratingSkeleton() {
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center gap-3 rounded-xl border border-primary/15 bg-primary/[0.04] px-4 py-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
-          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-primary/60 border-t-transparent" />
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <p className="text-sm font-medium text-foreground/65">Generating educational diagram…</p>
-          <p className="text-xs text-foreground/25">This can take 1–3 minutes · please keep this tab open</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-4">
-        {[0].map(i => (
-          <div
-            key={i}
-            className="flex flex-col gap-3 overflow-hidden rounded-2xl border border-border bg-muted/30"
-          >
-            <Skeleton className="h-48 w-full rounded-none" />
-            <div className="flex flex-col gap-2 p-4">
-              <Skeleton className="h-4 w-2/3 rounded-full" />
-              <Skeleton className="h-3 w-full rounded-full" />
-              <Skeleton className="h-3 w-4/5 rounded-full" />
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
@@ -230,15 +375,10 @@ function VisualsGrid({
 function VisualCard({ visual, onAskTutor }: { visual: StudyVisualItem; onAskTutor?: (prompt: string, mode?: TutorMode) => void }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
-      {/* Image area */}
       <div className="relative flex h-52 items-center justify-center bg-gradient-to-br from-primary/10 via-background to-muted/30">
         {visual.status === 'generated' && visual.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={visual.image_url}
-            alt={visual.topic}
-            className="h-full w-full object-contain"
-          />
+          <img src={visual.image_url} alt={visual.topic} className="h-full w-full object-contain" />
         ) : visual.status === 'failed' ? (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <WarningIcon className="h-8 w-8 text-red-400/40" />
@@ -256,8 +396,6 @@ function VisualCard({ visual, onAskTutor }: { visual: StudyVisualItem; onAskTuto
           </div>
         )}
       </div>
-
-      {/* Info */}
       <div className="flex flex-col gap-2 p-4">
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm font-semibold leading-snug text-foreground/80">{visual.topic}</p>
@@ -270,7 +408,6 @@ function VisualCard({ visual, onAskTutor }: { visual: StudyVisualItem; onAskTuto
         {visual.description && (
           <p className="text-xs leading-relaxed text-foreground/40">{visual.description}</p>
         )}
-        {/* Dev-mode error detail — visible in browser console and on-card in dev */}
         {visual.status === 'failed' && visual.error && (
           <p className="text-[10px] font-mono leading-relaxed text-red-400/40 break-all">
             {visual.failure_stage ? `[${visual.failure_stage}] ` : ''}{visual.error}

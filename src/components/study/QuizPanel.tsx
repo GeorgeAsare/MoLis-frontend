@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { generateQuiz } from '@/app/actions/quiz'
 import { recordConceptResult, getConceptMastery } from '@/app/actions/conceptMastery'
 import { startQuizAttempt, saveQuizAttempt } from '@/app/actions/quizAttempt'
+import { saveMemory } from '@/app/actions/userMemories'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type {
   Quiz,
@@ -229,6 +230,7 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAt
     } else {
       setPhase('review')
       const { correct, total } = computeScore(quiz.questions, answers)
+      const pct = Math.round((correct / total) * 100)
       if (attemptId) {
         saveQuizAttempt(attemptId, {
           answers,
@@ -239,9 +241,42 @@ export function QuizPanel({ documentId, hasExtractedText, initialQuiz, initialAt
           completed_at: new Date().toISOString(),
         }).catch(() => {})
       }
+
+      // Performance trend memory — updated in-place on every quiz completion for this document
+      void saveMemory({
+        source_agent: 'quiz',
+        source_entity_type: 'document',
+        source_entity_id: documentId,
+        category: 'performance',
+        content: `Scored ${correct}/${total} (${pct}%) on quiz`,
+        metadata: { quiz_id: quiz.id, correct, total, pct, completed_at: new Date().toISOString() },
+        importance: 6,
+        confidence: 9,
+      })
+
       const toRecord = quiz.questions
         .map((q, i) => ({ q, a: answers[i] }))
         .filter(({ q, a }) => q.concept_id && a?.revealed)
+
+      // Weakness memories: create/supersede for each incorrectly answered concept
+      quiz.questions.forEach((q, i) => {
+        if (!q.concept_id || !answers[i]?.revealed) return
+        if (gradeAnswer(q, answers[i]) !== true) {
+          const conceptTitle = q.concept_title ?? q.concept_id
+          void saveMemory({
+            source_agent: 'quiz',
+            source_entity_type: 'concept',
+            source_entity_id: q.concept_id,
+            category: 'knowledge',
+            content: `Struggling with concept: ${conceptTitle}`,
+            metadata: { document_id: documentId, concept_id: q.concept_id, concept_title: conceptTitle },
+            importance: 7,
+            confidence: 7,
+            supersedes_key: conceptTitle,
+          })
+        }
+      })
+
       if (toRecord.length > 0) {
         Promise.all(
           toRecord.map(({ q, a }) =>

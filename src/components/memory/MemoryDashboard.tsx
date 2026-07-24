@@ -5,23 +5,19 @@ import { deleteMemory, clearMemoryCategory } from '@/app/actions/userMemories'
 import type { UserMemory, MemoryCategory } from '@/types/userMemory'
 
 const CATEGORY_LABELS: Record<MemoryCategory, string> = {
-  preference: 'Preferences',
-  goal: 'Goals',
-  knowledge: 'Knowledge',
-  weakness: 'Weak Areas',
   activity: 'Activity',
-  decision: 'Decisions',
-  context: 'Context',
+  knowledge: 'Knowledge',
+  preference: 'Preferences',
+  performance: 'Performance',
+  engagement: 'Engagement',
 }
 
 const CATEGORY_COLORS: Record<MemoryCategory, string> = {
-  preference: 'text-primary border-primary/20 bg-primary/[0.07]',
-  goal: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/[0.07]',
-  knowledge: 'text-sky-400 border-sky-500/20 bg-sky-500/[0.07]',
-  weakness: 'text-red-400 border-red-500/20 bg-red-500/[0.07]',
   activity: 'text-amber-400 border-amber-500/20 bg-amber-500/[0.07]',
-  decision: 'text-violet-400 border-violet-500/20 bg-violet-500/[0.07]',
-  context: 'text-foreground/50 border-border bg-muted/30',
+  knowledge: 'text-sky-400 border-sky-500/20 bg-sky-500/[0.07]',
+  preference: 'text-primary border-primary/20 bg-primary/[0.07]',
+  performance: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/[0.07]',
+  engagement: 'text-violet-400 border-violet-500/20 bg-violet-500/[0.07]',
 }
 
 function relativeTime(iso: string): string {
