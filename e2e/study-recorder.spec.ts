@@ -14,6 +14,8 @@ test.describe('Recorder Study Journey', () => {
 
   test('recorder UI is present', async ({ authedPage: page }) => {
     await page.goto('/dashboard/agents/recorder')
+    // Wait for loading state to resolve before checking for UI elements
+    await expect(page.locator('main')).not.toContainText('Loading', { timeout: 15_000 })
     const hasRecordButton = await page.getByTestId('record-button').isVisible().catch(() => false)
     const hasAnyTestId = await page.locator('[data-testid]').first().isVisible().catch(() => false)
     expect(hasRecordButton || hasAnyTestId).toBeTruthy()

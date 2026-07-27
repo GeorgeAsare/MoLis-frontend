@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// Test credentials are loaded from .env.test.local automatically by Playwright
+// when it exists. Create .env.test.local with PLAYWRIGHT_TEST_EMAIL and
+// PLAYWRIGHT_TEST_PASSWORD to enable auth-requiring tests.
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,

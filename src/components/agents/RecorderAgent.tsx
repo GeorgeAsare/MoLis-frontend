@@ -496,6 +496,7 @@ export function RecorderAgent({
                   <div className="absolute inset-0 rounded-full bg-primary/10 blur-xl animate-pulse" />
                   <button
                     onClick={startRecording}
+                    data-testid="record-button"
                     className="relative flex h-20 w-20 items-center justify-center rounded-full border-2 border-primary/30 bg-primary/[0.08] transition-all hover:border-primary/50 hover:bg-primary/[0.14] hover:scale-105"
                     aria-label="Start recording"
                   >
