@@ -2,17 +2,22 @@
 
 import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
-import type { SupabaseClient } from '@supabase/supabase-js'
-import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
+import { createServiceClient } from '@/lib/supabase/serviceClient'
+import { logger } from '@/lib/logger'
+import { VISUALS_STORAGE_BUCKET } from '@/lib/jobs/visualsStorage'
+import type { StudyVisualItem } from '@/types/studyVisual'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TEXT_CHAR_LIMIT = 10_000
 const DEFAULT_VISUAL_GENERATION_COUNT = 1
-const STORAGE_BUCKET = 'study-visuals'
 const PROMPT_MODEL = 'gpt-4o-mini'
-// Configurable via OPENAI_IMAGE_MODEL env var; falls back to gpt-image-2
+
+// The study-visuals bucket MUST be private. Images are never accessible via
+// public URL. Access is via short-lived signed URLs issued server-side after
+// ownership verification: GET /api/visuals/[documentId]
+
 function getImageModel(): string {
   return process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2'
 }
@@ -122,25 +127,27 @@ function safeVisuals(value: unknown): StudyVisualItem[] {
       topic:        x.topic.trim(),
       description:  typeof x.description === 'string' ? x.description.trim() : '',
       image_prompt: x.image_prompt.trim(),
+      storage_path: null,
       image_url:    null,
       status:       'pending' as const,
     }))
 }
 
-// ── Phase 2: image generation + storage ──────────────────────────────────────
+// ── Image generation and storage ──────────────────────────────────────────────
+//
+// Uses the SERVICE-ROLE client for Storage uploads: the study-visuals bucket is
+// private and the authenticated role has no write access.
+// Paths are immutable and attempt-scoped: {userId}/{documentId}/{jobId}/{attempt}/{i}.png
+// upsert: false — never overwrite an existing object (fail closed on collision).
 
 async function generateAndStoreImage(
   openai: OpenAI,
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-  documentId: string,
+  storagePath: string,
   item: StudyVisualItem,
-  index: number,
   imageModel: string,
 ): Promise<StudyVisualItem> {
 
-  // ── Stage A: call OpenAI image generation ────────────────────────────────
-
+  // Stage A: call OpenAI image generation
   let imageBuffer: Buffer
   try {
     const response = await openai.images.generate({
@@ -153,85 +160,67 @@ async function generateAndStoreImage(
     const image = response.data?.[0]
 
     if (image?.b64_json) {
-      // GPT Image models return base64 by default
       imageBuffer = Buffer.from(image.b64_json, 'base64')
     } else if (image?.url) {
-      // Fallback: fetch URL server-side (DALL·E-style response)
       const fetched = await fetch(image.url)
-      if (!fetched.ok) throw new Error(`Failed to download generated image (HTTP ${fetched.status})`)
+      if (!fetched.ok) throw new Error(`Image download failed (HTTP ${fetched.status})`)
       imageBuffer = Buffer.from(await fetched.arrayBuffer())
     } else {
-      throw new Error('Image model unavailable. Check OPENAI_IMAGE_MODEL or API access.')
+      throw new Error('Image model returned no usable data')
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[visuals] image_generation_failed', {
-      topic: item.topic,
-      model: imageModel,
-      index,
-      error: msg.slice(0, 400),
-    })
+  } catch {
+    logger.error('worker.visuals.image_generation_failed', { error_code: 'IMAGE_GENERATION_FAILED' })
     return {
       ...item,
+      storage_path:  null,
       image_url:     null,
       status:        'failed',
-      error:         msg.slice(0, 200),
+      error:         'IMAGE_GENERATION_FAILED',
       failure_stage: 'image_generation',
     }
   }
 
-  // ── Stage B: upload to Supabase Storage ──────────────────────────────────
-
-  // Fixed path per user/doc/index — regeneration overwrites cleanly
-  const storagePath = `${userId}/${documentId}/${index}.png`
-
+  // Stage B: upload to private Supabase Storage via service-role client.
+  // upsert: false — fail closed if the path already exists (should be impossible
+  // with attempt-scoped versioned paths, but defended against at the API level).
+  // No public URL is generated. The storage_path is stored in the JSONB manifest
+  // and signed URLs are issued on-demand via the /api/visuals/[documentId] endpoint.
   try {
-    const { error: uploadError } = await supabase.storage
-      .from(STORAGE_BUCKET)
+    const serviceClient = createServiceClient()
+    const { error: uploadError } = await serviceClient.storage
+      .from(VISUALS_STORAGE_BUCKET)
       .upload(storagePath, imageBuffer, {
         contentType: 'image/png',
-        upsert:      true,
+        upsert:      false,
       })
 
-    if (uploadError) throw new Error(uploadError.message)
+    if (uploadError) throw new Error('Storage upload failed')
 
-    const { data: urlData } = supabase.storage
-      .from(STORAGE_BUCKET)
-      .getPublicUrl(storagePath)
+    logger.info('worker.visuals.image_staged', { path: storagePath })
 
-    console.log('[visuals] image_stored', {
-      topic: item.topic,
-      path:  storagePath,
-      url:   urlData.publicUrl.slice(0, 80) + '…',
-    })
-
-    return { ...item, image_url: urlData.publicUrl, status: 'generated' }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[visuals] storage_upload_failed', {
-      topic:       item.topic,
-      bucket:      STORAGE_BUCKET,
-      storagePath,
-      error:       msg.slice(0, 400),
-    })
+    return { ...item, storage_path: storagePath, image_url: null, status: 'generated' }
+  } catch {
+    logger.error('worker.visuals.storage_upload_failed', { error_code: 'STORAGE_UPLOAD_FAILED' })
     return {
       ...item,
+      storage_path:  null,
       image_url:     null,
       status:        'failed',
-      error:         msg.slice(0, 200),
+      error:         'STORAGE_UPLOAD_FAILED',
       failure_stage: 'storage_upload',
     }
   }
 }
 
-// ── Core generation (shared by server action and background job) ──────────────
+// ── Shared: resolve document, analysis, and generate topic prompts ────────────
 
-async function generateVisualsCore(
-  documentId: string,
-  userId: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: SupabaseClient<any, 'public', any>,
-): Promise<StudyVisualSet> {
+async function resolvePrompts(documentId: string, userId: string): Promise<{
+  prompts: StudyVisualItem[]
+  model: string
+}> {
+  // Uses the authenticated client for document and analysis reads (ownership enforced).
+  const supabase = await createClient()
+
   const { data: doc } = await supabase
     .from('documents')
     .select('user_id, title, extracted_text')
@@ -261,94 +250,75 @@ async function generateVisualsCore(
   let rawContent: string
   try {
     const completion = await openai.chat.completions.create({
-      model: PROMPT_MODEL,
+      model:           PROMPT_MODEL,
       response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens: 1200,
+      temperature:     0.3,
+      max_tokens:      1200,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: userPrompt },
       ],
     })
     rawContent = completion.choices[0]?.message?.content ?? ''
-    if (!rawContent) throw new Error('OpenAI returned an empty response')
+    if (!rawContent) throw new Error('Empty response')
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : ''
     if (msg.includes('429') || msg.includes('quota'))
       throw new Error('OpenAI rate limit reached. Please wait a moment and try again.')
     if (msg.includes('401') || msg.includes('Incorrect API key'))
       throw new Error('Invalid OpenAI API key. Check OPENAI_API_KEY in .env.local.')
-    throw new Error(`Visual topic detection failed: ${msg}`)
+    throw new Error('Visual topic detection failed. Please try again.')
   }
 
   let parsed: Record<string, unknown>
   try {
     parsed = JSON.parse(rawContent) as Record<string, unknown>
   } catch {
-    throw new Error('Malformed response from OpenAI. Please try again.')
+    throw new Error('Malformed response from AI model. Please try again.')
   }
 
   const prompts = safeVisuals(parsed.visuals)
+  const model = `${PROMPT_MODEL}+${imageModel}`
 
-  if (prompts.length === 0) {
-    const { data: saved, error } = await supabase
-      .from('study_visuals')
-      .upsert(
-        { document_id: documentId, user_id: userId, visuals: [], model: PROMPT_MODEL },
-        { onConflict: 'document_id,user_id' },
-      )
-      .select()
-      .single()
-    if (error || !saved) throw new Error(error?.message ?? 'Failed to save visuals')
-    return saved as StudyVisualSet
-  }
-
-  const generated: StudyVisualItem[] = []
-  for (let i = 0; i < prompts.length; i++) {
-    const result = await generateAndStoreImage(
-      openai, supabase, userId, documentId, prompts[i], i, imageModel,
-    )
-    generated.push(result)
-  }
-
-  const { data: saved, error: saveError } = await supabase
-    .from('study_visuals')
-    .upsert(
-      {
-        document_id: documentId,
-        user_id: userId,
-        visuals: generated,
-        model: `${PROMPT_MODEL}+${imageModel}`,
-      },
-      { onConflict: 'document_id,user_id' },
-    )
-    .select()
-    .single()
-
-  if (saveError || !saved) throw new Error(saveError?.message ?? 'Failed to save visuals')
-  return saved as StudyVisualSet
+  return { prompts, model }
 }
 
-// ── Called from background job API route ──────────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function generateVisualsForJob(documentId: string, userId: string, supabase: SupabaseClient<any, 'public', any>): Promise<StudyVisualSet> {
+// ── JOB PATH: staging ─────────────────────────────────────────────────────────
+//
+// Called from the job route worker BEFORE the completion CAS.
+// Generates images via OpenAI and uploads them to the private study-visuals bucket
+// at versioned attempt-scoped paths: {userId}/{documentId}/{jobId}/{attempt}/{i}.png
+//
+// Returns a manifest with storage_path for each item (no public URLs, no image_url).
+// study_visuals is NOT written here — only after the CAS wins (fn_complete_and_publish_job).
+// If the CAS fails (cancelled, stale, lost_race), staged objects remain private and
+// unreachable. Future storage cleanup handles orphaned objects.
+export async function stageVisualsForJob(
+  documentId: string,
+  userId: string,
+  jobId: string,
+  attemptCount: number,
+): Promise<{ items: StudyVisualItem[]; model: string }> {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not set.')
   }
-  return generateVisualsCore(documentId, userId, supabase)
-}
 
-// ── Server Action ─────────────────────────────────────────────────────────────
+  const { prompts, model } = await resolvePrompts(documentId, userId)
 
-export async function generateVisuals(documentId: string): Promise<StudyVisualSet> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY is not set. Add it to your .env.local file.')
+  if (prompts.length === 0) {
+    return { items: [], model }
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error('Not authenticated')
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const imageModel = getImageModel()
 
-  return generateVisualsCore(documentId, user.id, supabase)
+  const generated: StudyVisualItem[] = []
+  for (let i = 0; i < prompts.length; i++) {
+    // Versioned path: unique per job + attempt — no overwrite of other attempts' data.
+    const storagePath = `${userId}/${documentId}/${jobId}/${attemptCount}/${i}.png`
+    const result = await generateAndStoreImage(openai, storagePath, prompts[i], imageModel)
+    generated.push(result)
+  }
+
+  return { items: generated, model }
 }

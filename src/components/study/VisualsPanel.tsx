@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getActiveJobForDocument } from '@/app/actions/generationJobs'
 import { createClient } from '@/lib/supabase/client'
+import { getOrCreatePendingRequestKey, clearPendingRequestKey, setPendingRequestKey } from '@/lib/jobs/pendingJobKey'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
-import type { GenerationJob } from '@/types/generationJob'
+import type { JobSafeDto } from '@/lib/jobs/stateMachine'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { TutorMode } from '@/types/tutor'
 
@@ -24,7 +25,7 @@ type Phase =
 const STALE_THRESHOLD_MS = 10 * 60 * 1000  // 10 minutes
 const POLL_INTERVAL_MS = 3_000
 
-function isStale(job: GenerationJob): boolean {
+function isStale(job: JobSafeDto): boolean {
   if (job.status !== 'processing') return false
   const started = job.started_at ? new Date(job.started_at).getTime() : new Date(job.created_at).getTime()
   return Date.now() - started > STALE_THRESHOLD_MS
@@ -46,7 +47,17 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
   const [phase, setPhase] = useState<Phase>(initialVisuals ? 'completed' : 'checking')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Resolve userId once on mount for idempotency key scoping.
+  // getSession() reads from local storage — no network request.
+  useEffect(() => {
+    const supabase = createClient()
+    void supabase.auth.getSession().then(({ data }) => {
+      setUserId(data.session?.user.id ?? null)
+    })
+  }, [])
 
   function stopPolling() {
     if (pollRef.current) {
@@ -55,15 +66,19 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
     }
   }
 
-  // Fetch fresh visuals from Supabase after a job completes
+  // Fetch visuals with signed URLs from the server-side endpoint.
+  // The study-visuals bucket is private; direct Supabase client reads return storage_path
+  // but no displayable URL. The server-side endpoint resolves signed URLs (5-min expiry)
+  // for each generated item after verifying ownership.
   const refreshVisuals = useCallback(async () => {
-    const supabase = createClient()
-    const { data } = await supabase
-      .from('study_visuals')
-      .select('*')
-      .eq('document_id', documentId)
-      .maybeSingle()
-    if (data) setVisuals(data as StudyVisualSet)
+    try {
+      const res = await fetch(`/api/visuals/${documentId}`)
+      if (!res.ok) return
+      const data = (await res.json()) as StudyVisualSet
+      setVisuals(data)
+    } catch {
+      // Network error — keep existing visuals, don't crash
+    }
   }, [documentId])
 
   // Poll job status from the API route
@@ -77,7 +92,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
         setErrorMessage('Job status could not be retrieved.')
         return
       }
-      const job = (await res.json()) as GenerationJob
+      const job = (await res.json()) as JobSafeDto
 
       if (isStale(job)) {
         stopPolling()
@@ -97,7 +112,9 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
       } else if (job.status === 'failed') {
         stopPolling()
         setPhase('failed')
-        setErrorMessage(job.error ?? 'Visual generation failed. Please try again.')
+        // Use the safe public message key if available; otherwise use a generic fallback.
+        // Raw error text is never returned by the API — do not attempt to access it here.
+        setErrorMessage(job.public_message_key ?? 'Visual generation failed. Please try again.')
       } else if (job.status === 'cancelled') {
         stopPolling()
         setPhase('cancelled')
@@ -113,9 +130,19 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
     pollRef.current = setInterval(() => void pollJobStatus(id), POLL_INTERVAL_MS)
   }
 
-  // On mount: check for any active job, or skip to idle/completed
+  // When SSR provided initialVisuals, image_url is null (private bucket).
+  // Fetch signed URLs once on mount so images display immediately.
   useEffect(() => {
-    if (initialVisuals) return // already have visuals from SSR
+    if (!initialVisuals) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshVisuals()
+  // refreshVisuals is stable (useCallback with [documentId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // On mount: check for any active job, or skip to idle/completed.
+  useEffect(() => {
+    if (initialVisuals) return
 
     let cancelled = false
     void getActiveJobForDocument(documentId, 'visuals').then(job => {
@@ -159,23 +186,66 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
     setPhase('queued')
     setErrorMessage(null)
 
+    // Generate (or retrieve the pending) request key BEFORE the first network request.
+    // Scoped to (user, document, jobType) in sessionStorage so the same UUID survives
+    // network retries, duplicate-click submissions, and temporary refresh recovery.
+    // Falls back to a non-persisted UUID if the session is not available.
+    const requestKey = userId
+      ? getOrCreatePendingRequestKey(userId, documentId, 'visuals')
+      : crypto.randomUUID()
+
     try {
       const res = await fetch('/api/jobs/visuals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId }),
+        body: JSON.stringify({ documentId, requestKey }),
       })
+
+      if (res.status === 503) {
+        // P0007 concurrent-terminal race could not be resolved after one server retry.
+        // Preserve the request key — the client must retry the same key after a delay.
+        const body = (await res.json()) as { code?: string }
+        if (body.code === 'JOB_ENQUEUE_RETRY_REQUIRED') {
+          setPhase('failed')
+          setErrorMessage('Generation slot is momentarily busy. Please try again in a few seconds.')
+          return
+        }
+        throw new Error(`Request failed (HTTP 503)`)
+      }
+
       if (!res.ok) {
         const body = (await res.json()) as { error?: string }
         throw new Error(body.error ?? `Request failed (HTTP ${res.status})`)
       }
-      const { jobId: newJobId } = (await res.json()) as { jobId: string }
+
+      const { jobId: newJobId, requestKey: returnedKey } = (await res.json()) as {
+        jobId: string
+        requestKey?: string
+      }
       setJobId(newJobId)
       startPolling(newJobId)
+
+      // Sync sessionStorage with the server-confirmed key.
+      // In normal flow this is a no-op (returned key == sent key).
+      // If the server regenerated the key (e.g., client sent an invalid UUID),
+      // overwrite sessionStorage so future retries use the correct key.
+      if (returnedKey && userId && returnedKey !== requestKey) {
+        setPendingRequestKey(userId, documentId, 'visuals', returnedKey)
+      }
+      // Key is intentionally left in sessionStorage for retry resilience.
+      // Cleared only on explicit regeneration (handleRegenerate).
     } catch (err) {
       setPhase('failed')
       setErrorMessage(err instanceof Error ? err.message : 'Failed to start generation')
+      // Key preserved on failure — reused on next retry.
     }
+  }
+
+  // Intentional regeneration: clear the stored key so a new job is created
+  // rather than the server returning the existing terminal job.
+  async function handleRegenerate() {
+    if (userId) clearPendingRequestKey(userId, documentId, 'visuals')
+    await handleGenerate()
   }
 
   const isActive = phase === 'queued' || phase === 'processing'
@@ -194,7 +264,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
         </div>
         {phase === 'completed' && visuals && visuals.visuals.length > 0 && (
           <button
-            onClick={handleGenerate}
+            onClick={() => void handleRegenerate()}
             disabled={isActive}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55 disabled:opacity-40"
           >
@@ -228,7 +298,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
             </div>
           </div>
           <button
-            onClick={handleGenerate}
+            onClick={() => void handleRegenerate()}
             className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
           >
             Try Again
@@ -238,8 +308,8 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
 
       {phase === 'completed' && visuals && (
         visuals.visuals.length === 0
-          ? <NoVisualsState onRegenerate={handleGenerate} />
-          : <VisualsGrid visuals={visuals.visuals} onRegenerate={handleGenerate} onAskTutor={onAskTutor} />
+          ? <NoVisualsState onRegenerate={handleRegenerate} />
+          : <VisualsGrid visuals={visuals.visuals} onRegenerate={handleRegenerate} onAskTutor={onAskTutor} />
       )}
     </div>
   )
