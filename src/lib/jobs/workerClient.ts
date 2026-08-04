@@ -20,6 +20,20 @@ import type { StudyVisualItem } from '@/types/studyVisual'
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+// C07: Typed heartbeat result — indicates WHY renewal was refused so the worker
+// can take the correct action (only cancel_requested triggers acknowledgeCancel).
+//
+// refusalReason values:
+//   cancel_requested — worker must call acknowledgeCancel
+//   expired_lease    — lease expired; abort without state transition
+//   wrong_token      — workerId/leaseToken mismatch; abort without state transition
+//   not_processing   — job is not in processing state; abort without state transition
+//   rpc_transient    — transport/RPC error, not a DB refusal; route may retry (bounded)
+export interface HeartbeatResult {
+  renewed: boolean
+  refusalReason?: 'cancel_requested' | 'authority_lost' | 'job_not_processing' | 'terminal' | 'transient_failure'
+}
+
 export type ClaimOutcome =
   | 'claimed'
   | 'lost_race'
@@ -92,7 +106,7 @@ export async function claimJob(
   })
 
   if (error) {
-    logger.warn('worker.claim_rpc_failed', { job_id: jobId, pg_code: error.code })
+    logger.warn('worker.claim_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
     return { outcome: 'lost_race', leaseToken: null, stateVersion: null, attemptCount: null }
   }
 
@@ -118,13 +132,19 @@ export async function claimJob(
 // for cancel_requested jobs. Verifies BOTH workerId AND leaseToken.
 // D13: leaseDurationSeconds = 90 (the lease is renewed to NOW() + 90s).
 // A worker sending heartbeats every ≈30s always has ≈60s of buffer.
+//
+// C07: Returns HeartbeatResult with a typed refusal_reason. The caller must inspect
+// refusalReason to determine the correct action:
+//   cancel_requested → call acknowledgeCancel
+//   expired_lease / wrong_token / not_processing → abort only (no state transition)
+//   rpc_transient → transient RPC/transport error; bounded retry permitted (R7-H07)
 export async function heartbeatJob(
   jobId: string,
   workerId: string,
   leaseToken: string,
   stateVersion: number,
   leaseDurationSeconds = 90,
-): Promise<boolean> {
+): Promise<HeartbeatResult> {
   const supabase = createServiceClient()
   const { data, error } = await supabase.rpc('fn_heartbeat_job', {
     p_job_id:                 jobId,
@@ -135,12 +155,18 @@ export async function heartbeatJob(
   })
 
   if (error) {
-    logger.warn('worker.heartbeat_rpc_failed', { job_id: jobId, pg_code: error.code })
-    return false
+    // R7-H07: use 'rpc_transient' (not 'not_processing') so the route hits the bounded
+    // transient retry branch (default case) rather than the authority-lost abort branch.
+    logger.warn('worker.heartbeat_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    return { renewed: false, refusalReason: 'transient_failure' }
   }
 
-  const result = data as { renewed: boolean }
-  return result.renewed
+  const result = data as {
+    renewed: boolean
+    refusal_reason?: 'cancel_requested' | 'authority_lost' | 'job_not_processing' | 'terminal' | 'transient_failure'
+  }
+  if (result.renewed) return { renewed: true }
+  return { renewed: false, refusalReason: result.refusal_reason ?? 'transient_failure' }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +192,7 @@ export async function completeAndPublishJob(
   stateVersion: number,
   visuals: StudyVisualItem[],
   model: string,
+  resultCode?: string,
 ): Promise<CompleteAndPublishResult> {
   const supabase = createServiceClient()
   const { data, error } = await supabase.rpc('fn_complete_and_publish_job', {
@@ -175,11 +202,12 @@ export async function completeAndPublishJob(
     p_state_version: stateVersion,
     p_visuals:       visuals,
     p_model:         model,
+    p_result_code:   resultCode ?? null,
   })
 
   if (error) {
-    logger.warn('worker.complete_and_publish_rpc_failed', { job_id: jobId, pg_code: error.code })
-    throw new Error(`COMPLETE_AND_PUBLISH_FAILED:${error.code ?? 'UNKNOWN'}`)
+    logger.warn('worker.complete_and_publish_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    throw new Error('COMPLETE_AND_PUBLISH_FAILED')
   }
 
   const result = data as { outcome: CompleteOutcome; final_status: string | null; visual_count?: number }
@@ -213,8 +241,8 @@ export async function completeJob(
   })
 
   if (error) {
-    logger.warn('worker.complete_rpc_failed', { job_id: jobId, pg_code: error.code })
-    throw new Error(`COMPLETE_FAILED:${error.code ?? 'UNKNOWN'}`)
+    logger.warn('worker.complete_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    throw new Error('COMPLETE_FAILED')
   }
 
   const result = data as { outcome: CompleteOutcome; final_status: string | null }
@@ -251,8 +279,8 @@ export async function failJob(
   })
 
   if (error) {
-    logger.warn('worker.fail_rpc_failed', { job_id: jobId, pg_code: error.code })
-    throw new Error(`FAIL_FAILED:${error.code ?? 'UNKNOWN'}`)
+    logger.warn('worker.fail_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    throw new Error('FAIL_FAILED')
   }
 
   const result = data as { outcome: FailOutcome; final_status: string | null }
@@ -283,8 +311,8 @@ export async function acknowledgeCancel(
   })
 
   if (error) {
-    logger.warn('worker.acknowledge_cancel_rpc_failed', { job_id: jobId, pg_code: error.code })
-    throw new Error(`ACKNOWLEDGE_CANCEL_FAILED:${error.code ?? 'UNKNOWN'}`)
+    logger.warn('worker.acknowledge_cancel_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    throw new Error('ACKNOWLEDGE_CANCEL_FAILED')
   }
 
   const result = data as { outcome: AcknowledgeOutcome; final_status: string | null }
@@ -304,7 +332,7 @@ export async function recoverStaleJobs(): Promise<RecoverResult> {
   const { data, error } = await supabase.rpc('fn_recover_stale_jobs')
 
   if (error) {
-    logger.warn('worker.recover_stale_rpc_failed', { pg_code: error.code })
+    logger.warn('worker.recover_stale_rpc_failed', { error_class: 'rpc_error' })
     return { cancelled: 0, requeued: 0, permanentlyFailed: 0 }
   }
 

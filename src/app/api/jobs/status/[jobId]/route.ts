@@ -23,7 +23,7 @@ export async function GET(
   })
 
   if (error) {
-    logger.warn('job.status.rpc_failed', { job_id: jobId, pg_code: error.code })
+    logger.warn('job.status.rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 

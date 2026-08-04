@@ -31,8 +31,8 @@ export interface GenerationJob {
   completed_at: string | null
 
   // Columns added by migration 20260729120001_generation_job_state_machine_schema.sql
-  // Present only after that migration is applied; null-typed here for safe server reads.
-  state_version: number | null
+  // Present only after that migration is applied.
+  state_version: number
   // ORIGINATING request key (composite "${userId}:${uuid}") — the key that CREATED this job.
   // NOT the authoritative idempotency mapping. The generation_job_requests ledger table
   // (consolidated into 20260729120001) is authoritative: multiple request keys may resolve
@@ -43,6 +43,19 @@ export interface GenerationJob {
   public_error_code: string | null
   public_message_key: string | null
   support_reference: string | null
+  // Lease management columns — set by fn_claim_job, cleared on terminal states.
+  worker_id: string | null
+  lease_token: string | null
+  lease_expires_at: string | null
+  heartbeat_at: string | null
+  // Retry tracking columns.
+  attempt_count: number
+  max_attempts: number
+  // Snapshot and request binding — set at enqueue time.
+  snapshot_id: string | null
+  originating_request_id: string | null
+  // Classification applied by fn_enqueue_job.
+  request_classification: 'client_verified' | 'legacy_unverified' | null
 }
 
 // Ledger entry consolidated into migration 20260729120001.
@@ -53,6 +66,9 @@ export interface GenerationJob {
 export interface GenerationJobRequest {
   id: string
   user_id: string
+  document_id: string
+  job_type: GenerationJobType
+  snapshot_id: string | null
   // Composite "${userId}:${uuid}" — same format as generation_jobs.request_idempotency_key.
   request_idempotency_key: string
   request_payload_hash: string

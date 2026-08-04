@@ -6,7 +6,7 @@
  * This test requires:
  *   1. A Supabase test environment (local or staging) with the anon key and URL configured.
  *   2. Two real test user accounts seeded in auth.users.
- *   3. migration 20260729120001 and 20260729120002 applied in the target environment.
+ *   3. migration 20260729120001 applied in the target environment.
  *   4. A seed job owned by User B already present in the DB (or set up in beforeAll).
  *   5. The playwright test environment variables set (see below).
  *
@@ -23,7 +23,7 @@
  * tokens is the only credential permitted here. The service role key must not
  * appear in test files, committed files, or public environment variables.
  *
- * After migration 20260729120002:
+ * After migration 20260729120001:
  *   - REVOKE ALL PRIVILEGES ON TABLE public.generation_jobs FROM PUBLIC, authenticated, anon
  *   - generation_jobs_owner_view is DROPPED (no view-based access exists)
  *   - Clients read jobs ONLY via fn_get_job_safe_dto and fn_get_active_job_for_document RPCs
@@ -57,11 +57,26 @@ async function signIn(email: string, password: string) {
 test.describe('RLS: generation_jobs cross-user isolation', () => {
   test.skip(!supabaseUrl || !supabaseAnonKey, 'E2E_SUPABASE_URL and E2E_SUPABASE_ANON_KEY must be set')
 
+  // Hard credential failure: if E2E vars are set but required credentials are wrong/empty,
+  // fail loudly rather than producing silent test skips that mask misconfiguration.
+  test.beforeAll(async () => {
+    if (!supabaseUrl || !supabaseAnonKey) return
+    const userAEmail    = process.env.E2E_USER_A_EMAIL    ?? ''
+    const userAPassword = process.env.E2E_USER_A_PASSWORD ?? ''
+    if (!userAEmail || !userAPassword) {
+      throw new Error(
+        'E2E_SUPABASE_URL and E2E_SUPABASE_ANON_KEY are set, but ' +
+        'E2E_USER_A_EMAIL or E2E_USER_A_PASSWORD are missing. ' +
+        'Set all required env vars or unset E2E_SUPABASE_URL to skip this suite.',
+      )
+    }
+  })
+
   // ── Base table access revoked ─────────────────────────────────────────────
 
   test('Authenticated user cannot SELECT from base generation_jobs table (all privileges revoked)', async () => {
     /**
-     * After migration 20260729120002: REVOKE ALL PRIVILEGES ON TABLE public.generation_jobs
+     * After migration 20260729120001: REVOKE ALL PRIVILEGES ON TABLE public.generation_jobs
      * FROM PUBLIC, authenticated, anon.
      *
      * Even a user reading their own rows via the base table must receive a permission error.
@@ -99,7 +114,7 @@ test.describe('RLS: generation_jobs cross-user isolation', () => {
     const userId = userData.user?.id
     expect(userId).toBeTruthy()
 
-    // After migration 20260729120002, INSERT is revoked from authenticated.
+    // After migration 20260729120001, INSERT is revoked from authenticated.
     // Direct insert must fail — jobs are created only via fn_enqueue_job RPC.
     const { error } = await clientA
       .from('generation_jobs')
@@ -140,7 +155,7 @@ test.describe('RLS: generation_jobs cross-user isolation', () => {
      * User A calling the RPC with User B's job_id must receive null (not the row).
      *
      * This replaces the dropped generation_jobs_owner_view isolation test.
-     * The view was dropped by migration 20260729120002; ownership isolation is
+     * The view was dropped by migration 20260729120001; ownership isolation is
      * now exclusively enforced inside the SECURITY DEFINER function via auth.uid().
      *
      * Requires: E2E_USER_B_JOB_ID set to a job_id owned by User B.

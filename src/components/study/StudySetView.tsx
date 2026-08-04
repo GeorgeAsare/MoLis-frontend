@@ -14,7 +14,7 @@ import type { TutorPanelHandle } from '@/components/study/TutorPanel'
 import type { RevisionNote } from '@/types/revisionNotes'
 import type { Quiz } from '@/types/quiz'
 import type { FlashcardSet } from '@/types/flashcard'
-import type { StudyVisualSet } from '@/types/studyVisual'
+import type { PublicVisualSet } from '@/types/studyVisual'
 import type { ConceptMastery } from '@/types/conceptMastery'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { StudyPlan } from '@/types/studyPlan'
@@ -40,7 +40,7 @@ interface Props {
   initialNotes: RevisionNote | null
   initialQuiz: Quiz | null
   initialFlashcards: FlashcardSet | null
-  initialVisuals: StudyVisualSet | null
+  initialVisuals: PublicVisualSet | null
   weakTopics: ConceptMastery[]
   initialAnalysis: DocumentAnalysis | null
   initialStudyPlan: StudyPlan | null

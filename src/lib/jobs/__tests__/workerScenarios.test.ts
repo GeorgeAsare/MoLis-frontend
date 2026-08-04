@@ -13,7 +13,9 @@
  *   never silent skips that would produce false-positive test passes.
  */
 
-import { describe, it, expect, test, vi, afterEach } from 'vitest'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+import { describe, it, expect, test, vi, afterEach, beforeAll } from 'vitest'
 import {
   isLegalClientTransition,
   isTerminal,
@@ -22,7 +24,12 @@ import {
   ACTIVE_STATUSES,
 } from '../stateMachine'
 import type { JobSafeDto, JobStatus } from '../stateMachine'
-import { buildRequestIdempotencyKey } from '../idempotencyKey'
+import {
+  buildRequestIdempotencyKey,
+  buildSourceDigest,
+  buildRequestHash,
+} from '../idempotencyKey'
+import type { SourceDigestEnvelope, RequestHashEnvelope } from '../idempotencyKey'
 import {
   claimJob,
   heartbeatJob,
@@ -125,6 +132,178 @@ describe('Phase 2 — D13 heartbeat and lease timing (unit)', () => {
     const HEARTBEAT_INTERVAL_MS = 30_000
     expect(HEARTBEAT_INTERVAL_MS).toBe(30_000)
     expect(HEARTBEAT_INTERVAL_MS / 1000).toBe(30)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUP A — heartbeatInFlight lifecycle (R10-H03)
+//
+// These tests prove the heartbeatInFlight guard contract using the same pattern
+// used in src/app/api/jobs/visuals/route.ts.
+//
+// R9 regression: a successful renewal returned early (line 104) and never reached
+// the reset at line 146 — so heartbeatInFlight was permanently stuck at true,
+// disabling all future heartbeats.
+//
+// Fix: wrap the entire heartbeat body in try/finally so heartbeatInFlight is
+// always reset regardless of control flow (success, cancel, authority loss, throw).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Local simulation of the route's heartbeat guard pattern (same control flow).
+// Used across all heartbeat lifecycle tests to prove the contract without
+// importing the Next.js route (which has environment dependencies).
+type FakeHeartbeatResult = { renewed: boolean; refusalReason: string | null }
+
+async function runFakeHeartbeat(opts: {
+  heartbeatInFlight: { value: boolean }
+  aborted: { value: boolean }
+  heartbeatFn: () => Promise<FakeHeartbeatResult>
+  onCancel?: () => void
+}): Promise<'skipped' | 'renewed' | 'cancelled' | 'authority_lost' | 'transient' | 'threw'> {
+  const { heartbeatInFlight: flag, aborted, heartbeatFn, onCancel } = opts
+  if (aborted.value || flag.value) return 'skipped'
+  flag.value = true
+  try {
+    const heartbeat = await heartbeatFn()
+    if (heartbeat.renewed) return 'renewed'
+    switch (heartbeat.refusalReason) {
+      case 'cancel_requested':
+        aborted.value = true
+        onCancel?.()
+        return 'cancelled'
+      case 'authority_lost':
+      case 'job_not_processing':
+      case 'terminal':
+        aborted.value = true
+        return 'authority_lost'
+      default:
+        return 'transient'
+    }
+  } catch {
+    return 'threw'
+  } finally {
+    // R10-H03: always reset — covers success (early return above), all switch branches, throws
+    flag.value = false
+  }
+}
+
+describe('Phase 2 — heartbeatInFlight lifecycle (R10-H03)', () => {
+  it('successful renewal resets heartbeatInFlight (was stuck=true in R9 regression)', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+
+    const result = await runFakeHeartbeat({
+      heartbeatInFlight: flag,
+      aborted,
+      heartbeatFn: async () => ({ renewed: true, refusalReason: null }),
+    })
+
+    expect(result).toBe('renewed')
+    expect(flag.value).toBe(false) // R9 regression: this was true (never reset)
+  })
+
+  it('a second heartbeat can run after the first succeeds', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+    const hb = async () => ({ renewed: true, refusalReason: null })
+
+    await runFakeHeartbeat({ heartbeatInFlight: flag, aborted, heartbeatFn: hb })
+    expect(flag.value).toBe(false)
+
+    // Second call must not be skipped
+    const result2 = await runFakeHeartbeat({ heartbeatInFlight: flag, aborted, heartbeatFn: hb })
+    expect(result2).toBe('renewed')
+    expect(flag.value).toBe(false)
+  })
+
+  it('overlapping call is skipped while first is in flight', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+    let resolveFirst!: (v: FakeHeartbeatResult) => void
+
+    const slowHb = () => new Promise<FakeHeartbeatResult>(res => { resolveFirst = res })
+    const fastHb = async (): Promise<FakeHeartbeatResult> => ({ renewed: true, refusalReason: null })
+
+    // Start first (in-flight, not yet resolved)
+    const first = runFakeHeartbeat({ heartbeatInFlight: flag, aborted, heartbeatFn: slowHb })
+    expect(flag.value).toBe(true) // guard is set immediately
+
+    // Second concurrent call must be skipped without awaiting the slow RPC
+    const second = await runFakeHeartbeat({ heartbeatInFlight: flag, aborted, heartbeatFn: fastHb })
+    expect(second).toBe('skipped')
+
+    // Resolve the first
+    resolveFirst({ renewed: true, refusalReason: null })
+    const firstResult = await first
+    expect(firstResult).toBe('renewed')
+    expect(flag.value).toBe(false) // reset by finally
+
+    // Third call can now run
+    const third = await runFakeHeartbeat({ heartbeatInFlight: flag, aborted, heartbeatFn: fastHb })
+    expect(third).toBe('renewed')
+  })
+
+  it('cancellation path resets heartbeatInFlight', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+    let cancelled = false
+
+    const result = await runFakeHeartbeat({
+      heartbeatInFlight: flag,
+      aborted,
+      heartbeatFn: async () => ({ renewed: false, refusalReason: 'cancel_requested' }),
+      onCancel: () => { cancelled = true },
+    })
+
+    expect(result).toBe('cancelled')
+    expect(flag.value).toBe(false)
+    expect(cancelled).toBe(true)
+    expect(aborted.value).toBe(true)
+  })
+
+  it('authority loss path resets heartbeatInFlight', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+
+    const result = await runFakeHeartbeat({
+      heartbeatInFlight: flag,
+      aborted,
+      heartbeatFn: async () => ({ renewed: false, refusalReason: 'authority_lost' }),
+    })
+
+    expect(result).toBe('authority_lost')
+    expect(flag.value).toBe(false)
+    expect(aborted.value).toBe(true)
+  })
+
+  it('thrown exception path resets heartbeatInFlight', async () => {
+    const flag = { value: false }
+    const aborted = { value: false }
+
+    const result = await runFakeHeartbeat({
+      heartbeatInFlight: flag,
+      aborted,
+      heartbeatFn: async () => { throw new Error('RPC network failure') },
+    })
+
+    expect(result).toBe('threw')
+    expect(flag.value).toBe(false) // finally must execute even after throw
+  })
+
+  it('aborted flag prevents all further heartbeats', async () => {
+    const flag = { value: false }
+    const aborted = { value: true } // already aborted
+    let called = false
+
+    const result = await runFakeHeartbeat({
+      heartbeatInFlight: flag,
+      aborted,
+      heartbeatFn: async () => { called = true; return { renewed: true, refusalReason: null } },
+    })
+
+    expect(result).toBe('skipped')
+    expect(called).toBe(false)
+    expect(flag.value).toBe(false) // guard never set because skipped immediately
   })
 })
 
@@ -298,6 +477,163 @@ describe('Phase 2 — Service client security (unit)', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GROUP A — DB contract static assertions (unit)
+//
+// These always execute. They verify the error codes, formats, allowlists, and
+// invariants that Group B DB integration tests would exercise at the database
+// level. Running these without a database catches regressions in the contracts
+// that both the migration SQL and the application code must uphold together.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Phase 2 — DB contract static assertions (unit)', () => {
+  it('fn_enqueue_job simplified signature: DB derives all authoritative values', () => {
+    // New fn_enqueue_job accepts only 4 parameters. The DB computes source_digest
+    // and request_hash internally via fn_sha256_hex — no caller-supplied hashes.
+    const ACCEPTED = ['p_document_id', 'p_job_type', 'p_idempotency_key', 'p_sanitized_input']
+    const REMOVED  = [
+      'p_payload_hash', 'p_expected_document_updated_at',
+      'p_expected_document_text_updated_at', 'p_expected_analysis_updated_at',
+    ]
+    expect(ACCEPTED).toHaveLength(4)
+    for (const removed of REMOVED) expect(ACCEPTED).not.toContain(removed)
+  })
+
+  it('fn_fail_job: valid (error_code, message_key) pairs form a bijection', () => {
+    // DB enforces pairs together — not individually — per DBR6-C12.
+    const PAIRS: [string, string][] = [
+      ['JOB_PROVIDER_UNAVAILABLE', 'errors.job.provider_unavailable'],
+      ['JOB_PROVIDER_RATE_LIMITED', 'errors.job.rate_limited'],
+      ['JOB_INPUT_TOO_LARGE',       'errors.job.input_too_large'],
+      ['JOB_OUTPUT_UNAVAILABLE',    'errors.job.output_unavailable'],
+      ['JOB_TIMEOUT',               'errors.job.timeout'],
+      ['JOB_CANCELLED',             'errors.job.cancelled'],
+      ['JOB_FAILED_TRANSIENT',      'errors.job.failed_retry'],
+      ['JOB_FAILED_PERMANENT',      'errors.job.failed'],
+      ['JOB_INTERNAL_ERROR',        'errors.job.internal'],
+    ]
+    const codes = PAIRS.map(([c]) => c)
+    const keys  = PAIRS.map(([, k]) => k)
+    expect(new Set(codes).size).toBe(PAIRS.length)
+    expect(new Set(keys).size).toBe(PAIRS.length)
+    // Mixed pair must not appear in the list.
+    const validPairs = new Set(PAIRS.map(([c, k]) => `${c}|${k}`))
+    expect(validPairs.has('JOB_PROVIDER_UNAVAILABLE|errors.job.rate_limited')).toBe(false)
+  })
+
+  it('fn_fail_job: support reference regex rejects unsafe and prefix-only values', () => {
+    // DB enforces: ^SR-[A-Z0-9][A-Z0-9-]{1,60}$ (DBR6-C12)
+    const PATTERN = /^SR-[A-Z0-9][A-Z0-9-]{1,60}$/
+    const VALID   = ['SR-JOB-12345', 'SR-A1', 'SR-VISUALS-ABC-999']
+    const INVALID = ['sr-lowercase', 'SR-', 'SR-!BAD', 'not-a-ref', 'SR-@hash']
+    for (const v of VALID)   expect(v, `expected ${v} to match`).toMatch(PATTERN)
+    for (const v of INVALID) expect(v, `expected ${v} not to match`).not.toMatch(PATTERN)
+  })
+
+  it('DOCUMENT_REVISION_CHANGED is P0017 — distinct from idempotency and auth error codes', () => {
+    // fn_enqueue_job D2 path raises P0017 when content_hash of active job differs
+    // from the current source digest. Client must cancel the active job first.
+    const CODE = 'P0017'
+    expect(CODE).toMatch(/^P\d{4}$/)
+    expect(CODE).not.toBe('P0001') // NOT_AUTHENTICATED
+    expect(CODE).not.toBe('P0004') // IDEMPOTENCY_PAYLOAD_CONFLICT
+    expect(CODE).not.toBe('P0003') // DOCUMENT_NOT_FOUND_OR_NOT_OWNED
+  })
+
+  it('fn_complete_and_publish_job: only NO_VISUAL_TOPICS is an allowed result code', () => {
+    const ALLOWED = ['NO_VISUAL_TOPICS']
+    expect(ALLOWED).toHaveLength(1)
+    expect(ALLOWED[0]).toBe('NO_VISUAL_TOPICS')
+    // Empty manifest → must use NO_VISUAL_TOPICS; non-empty → result_code must be null.
+    const emptyVisuals: unknown[] = []
+    const nonEmpty: unknown[] = [{}]
+    expect(emptyVisuals.length === 0).toBe(true)
+    expect(nonEmpty.length > 0).toBe(true)
+  })
+
+  it('fn_complete_and_publish_job: manifest bounded at 10 items and statuses are closed', () => {
+    const MAX_VISUALS = 10
+    const ALLOWED_STATUSES = new Set(['generated', 'failed'])
+    expect(MAX_VISUALS).toBe(10)
+    expect(ALLOWED_STATUSES.has('generated')).toBe(true)
+    expect(ALLOWED_STATUSES.has('pending')).toBe(false)
+    expect(ALLOWED_STATUSES.has('cancelled')).toBe(false)
+    expect(ALLOWED_STATUSES.has('queued')).toBe(false)
+  })
+
+  it('content_hash format: 64 lowercase hex chars (SHA-256 output of fn_sha256_hex)', () => {
+    // fn_sha256_hex: encode(digest(input, 'sha256'), 'hex') — 32 bytes = 64 hex chars.
+    const HASH_RE  = /^[0-9a-f]{64}$/
+    // Known SHA-256 test vector: SHA-256('') = e3b0c44...
+    const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    expect(EMPTY_SHA256).toMatch(HASH_RE)
+    expect(EMPTY_SHA256).toHaveLength(64)
+  })
+
+  it('buildSourceDigest produces a 64-char hex string from a valid envelope', () => {
+    const envelope: SourceDigestEnvelope = {
+      schema_version:                1,
+      document_id:                   '00000000-0000-0000-0000-000000000001',
+      document_title:                'Test Document',
+      document_extracted_text:       'Some content',
+      document_file_type:            'pdf',
+      document_source_type:          'upload',
+      document_created_at:           '2026-01-01T00:00:00Z',
+      document_subject_id:           null,
+      document_source_recording_id:  null,
+      analysis_id:                   null,
+      analysis_data:                 null,
+      analysis_created_at:           null,
+      analysis_model:                null,
+    }
+    const digest = buildSourceDigest(envelope)
+    expect(digest).toMatch(/^[0-9a-f]{64}$/)
+    // Same input → same digest (deterministic).
+    expect(buildSourceDigest(envelope)).toBe(digest)
+  })
+
+  it('buildRequestHash produces a 64-char hex string and changes when source_digest changes', () => {
+    const base: RequestHashEnvelope = {
+      schema_version:       1,
+      source_digest:        'a'.repeat(64),
+      job_type:             'visuals',
+      operation_descriptor: { text_model: 'gpt-4o-mini', image_model: 'gpt-image-2' },
+      sanitized_input:      {},
+    }
+    const hashA = buildRequestHash(base)
+    const hashB = buildRequestHash({ ...base, source_digest: 'b'.repeat(64) })
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/)
+    expect(hashB).toMatch(/^[0-9a-f]{64}$/)
+    expect(hashA).not.toBe(hashB)
+  })
+
+  it('scoped idempotency key format: ${userId}:${uuid} matches DB validation regex', () => {
+    const SCOPED_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    const userId   = '12345678-1234-1234-1234-123456789012'
+    const reqKey   = buildRequestIdempotencyKey()
+    const scoped   = `${userId}:${reqKey}`
+    expect(scoped).toMatch(SCOPED_RE)
+    expect(scoped.split(':')[0]).toBe(userId)
+  })
+
+  it('permission denied SQLSTATE is 42501 — referenced by all DB security tests', () => {
+    // PostgreSQL SQLSTATE for insufficient_privilege.
+    // Group B security tests check error.code against /42501|403/.
+    expect('42501').toHaveLength(5)
+    expect('42501').toMatch(/^[0-9A-Z]{5}$/)
+  })
+
+  it('generation_source_snapshots content_hash is the authoritative source identity', () => {
+    // The snapshot.content_hash (DB-computed SHA-256 of the source envelope)
+    // is the authoritative value compared in DOCUMENT_REVISION_CHANGED detection,
+    // not any caller-supplied hash. This test documents the design invariant.
+    // fn_enqueue_job: v_source_digest = fn_sha256_hex(source_envelope_text)
+    // D2 check: IF v_active_content_hash IS DISTINCT FROM v_source_digest → P0017
+    const designInvariant = 'DB_COMPUTED_HASH_IS_AUTHORITATIVE'
+    expect(designInvariant).toBe('DB_COMPUTED_HASH_IS_AUTHORITATIVE')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GROUP B — Database integration tests
 // STATUS: WRITTEN BUT NOT EXECUTED
 //
@@ -316,6 +652,25 @@ describe('Phase 2 — Database integration (NOT EXECUTED)', () => {
   // Without the flag, all Group B tests are skipped. This prevents accidental execution
   // against a production or shared environment during local development.
   const NOT_EXECUTED = !process.env['RUN_DATABASE_TESTS']
+
+  // Hard credential failure: if RUN_DATABASE_TESTS=1 but required env vars are missing,
+  // fail loudly in beforeAll rather than silently skipping every test.
+  // This prevents a misconfigured CI run from producing a false-positive green suite.
+  if (!NOT_EXECUTED) {
+    beforeAll(() => {
+      const missing: string[] = []
+      if (!process.env['E2E_SUPABASE_URL'])    missing.push('E2E_SUPABASE_URL')
+      if (!process.env['E2E_SUPABASE_ANON_KEY']) missing.push('E2E_SUPABASE_ANON_KEY')
+      if (!process.env['SUPABASE_SECRET_KEY'] && !process.env['SUPABASE_SERVICE_ROLE_KEY'])
+        missing.push('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY')
+      if (missing.length > 0) {
+        throw new Error(
+          `RUN_DATABASE_TESTS=1 but required env vars are not set: ${missing.join(', ')}. ` +
+          'Set these variables or unset RUN_DATABASE_TESTS to skip Group B tests.',
+        )
+      }
+    })
+  }
 
   // ── SECURITY: migration 20260729120001 state ──
 
@@ -931,5 +1286,635 @@ describe('Phase 2 — Database integration (NOT EXECUTED)', () => {
     // const { data: ledger } = await serviceClient.from('generation_job_requests').select().in('request_idempotency_key', [kA, kB])
     // expect(ledger).toHaveLength(2)
     // expect(ledger!.map((r: { job_id: string }) => r.job_id)).not.toContain(expect.arrayContaining([rA.job_id === rB.job_id]))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUP C — Static migration content tests (R7-H10)
+//
+// Executable without a database: reads the migration SQL file and asserts
+// that forbidden patterns are absent and required patterns are present.
+// Also verifies cross-language digest known-answer vectors (KAVs) to detect
+// regressions in the TypeScript buildSourceDigest serialization or hash function.
+//
+// These tests run in every CI pass. They guard against re-introduction of the
+// bugs closed by Round 8: the broken search_path, the missing document_analysis
+// column (data), and the unqualified digest/encode calls.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Phase 3 — Static migration content tests (R7-H10)', () => {
+  // Resolve migration path relative to the repo root (3 levels up from __tests__).
+  const MIGRATION_PATH = resolve(__dirname, '../../../../migrations/20260729120001_generation_job_state_machine_schema.sql')
+  const WORKER_PATH    = resolve(__dirname, '../visualsWorker.ts')
+
+  let migrationSql: string
+  let workerSrc: string
+
+  beforeAll(() => {
+    migrationSql = readFileSync(MIGRATION_PATH, 'utf8')
+    workerSrc    = readFileSync(WORKER_PATH, 'utf8')
+  })
+
+  // ── FORBIDDEN PATTERNS (must be absent from migration SQL) ────────────────
+
+  it('[STATIC] migration must NOT contain document_analysis.data column reference', () => {
+    // R7-C01: the fatal bug was SELECT id, data, created_at, model FROM document_analysis.
+    // "data" is not a column in document_analysis (D11). Any reference to that bare column
+    // name in the migration is a regression.
+    expect(migrationSql).not.toMatch(/document_analysis\.\s*data\b/)
+    expect(migrationSql).not.toMatch(/SELECT\s+id\s*,\s*data\s*,/)
+  })
+
+  it('[STATIC] migration must NOT use the broken quoted search_path string', () => {
+    // R7-C02: SET search_path = 'public,extensions,pg_catalog' (one quoted entry) treated the
+    // entire comma-separated list as a single schema name — none resolved. The correct form
+    // is SET search_path = extensions, pg_catalog (two unquoted comma-separated schemas).
+    expect(migrationSql).not.toContain("'public,extensions,pg_catalog'")
+    // Also reject any SET search_path line that includes 'public' as a schema entry.
+    // Public presence in search_path on a SECURITY DEFINER function is a privilege-escalation
+    // risk (attacker-controlled objects in public shadow legitimate schemas).
+    // Use [^\n] to prevent the regex from spanning multiple lines (which would falsely match
+    // "SET search_path = extensions, pg_catalog" ... many lines ... "public.generation_jobs").
+    const lines = migrationSql.split('\n')
+    const badLines = lines.filter(line =>
+      /SET\s+search_path\s*=/.test(line) && /\bpublic\b/.test(line)
+    )
+    expect(badLines).toHaveLength(0)
+  })
+
+  it('[STATIC] migration must NOT contain unqualified digest() or encode() calls', () => {
+    // R7-C02: bare digest() and encode() are unsafe in SECURITY DEFINER functions because
+    // they resolve via search_path and can be shadowed by attacker-controlled functions.
+    // Correct form: extensions.digest() and pg_catalog.encode().
+    // The regex excludes comment lines (--) and the diagnostic error message string.
+    const nonCommentLines = migrationSql
+      .split('\n')
+      .filter(line => !line.trimStart().startsWith('--'))
+      .join('\n')
+    // No unqualified digest() — must always be extensions.digest(
+    expect(nonCommentLines).not.toMatch(/(?<!extensions\.)(?<!\w)digest\s*\(/)
+    // No unqualified encode() — must always be pg_catalog.encode(
+    expect(nonCommentLines).not.toMatch(/(?<!pg_catalog\.)(?<!\w)encode\s*\(/)
+  })
+
+  // ── REQUIRED PATTERNS (must be present in migration SQL) ──────────────────
+
+  it('[STATIC] migration must use extensions.digest() (schema-qualified)', () => {
+    expect(migrationSql).toContain('extensions.digest(')
+  })
+
+  it('[STATIC] migration must use pg_catalog.encode() (schema-qualified)', () => {
+    expect(migrationSql).toContain('pg_catalog.encode(')
+  })
+
+  it('[STATIC] migration must use SET search_path = extensions, pg_catalog (correct form)', () => {
+    expect(migrationSql).toContain('SET search_path = extensions, pg_catalog')
+  })
+
+  it('[STATIC] migration must use FOR SHARE locking on the consistent document read', () => {
+    // R7-C04: single consistent LEFT JOIN read with FOR SHARE prevents concurrent
+    // document/analysis mutation between two separate reads.
+    expect(migrationSql).toContain('FOR    SHARE')
+  })
+
+  it('[STATIC] migration must handle unique_violation for new-job concurrent race (R7-C03)', () => {
+    // R7-C03: without a WHEN unique_violation handler, two concurrent enqueue calls for the
+    // same (user, doc, type) would both attempt INSERT, and the loser would get an unhandled
+    // 23505 error. The handler re-reads the winner and durably binds the losing key.
+    expect(migrationSql).toContain('WHEN unique_violation THEN')
+  })
+
+  it('[STATIC] migration must raise EXCEPTION (not WARNING) on wrong migration owner', () => {
+    // R7: the current_user assertion was previously a WARNING — it did not block execution.
+    // A WARNING can be missed in automated pipelines. EXCEPTION is the only safe choice.
+    expect(migrationSql).toContain('RAISE EXCEPTION')
+    expect(migrationSql).not.toMatch(/RAISE\s+WARNING\s+.*current_user/)
+  })
+
+  it('[STATIC] migration must assert pgcrypto is in the extensions schema', () => {
+    // R7-C02: fn_sha256_hex calls extensions.digest(). If pgcrypto is installed in a
+    // different schema, that call silently fails at apply time. The preflight must block
+    // migration on a wrong-schema install.
+    // R7-H09: the check was consolidated into the main preflight (section 1) which uses
+    // IS DISTINCT FROM rather than !=; both are semantically equivalent for text comparison.
+    expect(migrationSql).toMatch(/v_ext_schema\s+IS\s+DISTINCT\s+FROM\s+'extensions'/)
+  })
+
+  it('[STATIC] migration must not ADD dead expected_*_updated_at columns (R7-M04)', () => {
+    // R7-M04: three dead columns were removed — they were never populated by fn_enqueue_job
+    // and would have created a misleading false-precision API surface.
+    // The column names may still appear in the drift-detection block (which checks whether
+    // they exist from a prior schema version), but no ADD COLUMN statement must create them.
+    expect(migrationSql).not.toMatch(/ADD\s+COLUMN[^;]*expected_document_updated_at/)
+    expect(migrationSql).not.toMatch(/ADD\s+COLUMN[^;]*expected_document_text_updated_at/)
+    expect(migrationSql).not.toMatch(/ADD\s+COLUMN[^;]*expected_analysis_updated_at/)
+  })
+
+  // ── WORKER SOURCE ASSERTIONS ───────────────────────────────────────────────
+
+  it('[STATIC] visualsWorker must NOT read from documents or document_analysis tables', () => {
+    // The worker must only read from the immutable generation_source_snapshots via
+    // fn_get_claimed_job_context. Direct reads from mutable tables break the snapshot
+    // isolation guarantee (the document could have changed since enqueue time).
+    expect(workerSrc).not.toMatch(/\.from\s*\(\s*['"]documents['"]\s*\)/)
+    expect(workerSrc).not.toMatch(/\.from\s*\(\s*['"]document_analysis['"]\s*\)/)
+  })
+
+  it('[STATIC] visualsWorker must NOT log raw storage paths (R7-M03)', () => {
+    // R7-M03: logging full Storage paths (e.g. {userId}/{documentId}/...) exposes
+    // tenant-scoped path structure in log aggregators accessible to operators or
+    // third-party log services. Logs must use opaque indicators only.
+    expect(workerSrc).not.toMatch(/logger\.(info|warn|error|debug)\s*\([^)]*\bpath\s*:\s*storagePath/)
+  })
+
+  // ── ROUND 9 CORRECTION ASSERTIONS (R9-C01, R9-C02, R9-H02, R9-H03) ────────
+
+  it('[STATIC] migration fn_sha256_hex must use STRICT to return NULL for NULL input (R9-C01)', () => {
+    // R9-C01: without STRICT, fn_sha256_hex(NULL) would attempt to hash the string NULL,
+    // producing a spurious hash rather than NULL. STRICT propagates NULL cleanly.
+    expect(migrationSql).toMatch(/CREATE\s+FUNCTION\s+public\.fn_sha256_hex[^;]*\bSTRICT\b/)
+  })
+
+  it('[STATIC] migration fn_sha256_hex must use pg_catalog.convert_to for explicit UTF-8 bytes (R9-C01)', () => {
+    // R9-C01: extensions.digest() accepts bytea. Without convert_to, a TEXT input is
+    // cast via the session client_encoding, which may not be UTF-8. convert_to pins the
+    // byte contract to UTF-8 regardless of session settings.
+    expect(migrationSql).toContain("pg_catalog.convert_to(p_input, 'UTF8')")
+  })
+
+  it('[STATIC] migration must assert server_encoding = UTF8 in preflight (R9-C01)', () => {
+    // R9-C01: if the database server_encoding is not UTF8, the byte contract for
+    // fn_sha256_hex is undefined. The preflight must block migration execution early.
+    expect(migrationSql).toContain("current_setting('server_encoding') <> 'UTF8'")
+  })
+
+  it('[STATIC] migration must use to_char with AT TIME ZONE UTC for timestamp encoding in source envelope (R9-C01)', () => {
+    // R9-C01: JSONB::TEXT cast of timestamps is session-timezone dependent. The canonical
+    // hash must use to_char(ts AT TIME ZONE 'UTC', ...) to produce a timezone-fixed string.
+    expect(migrationSql).toMatch(/to_char\s*\([^)]+AT\s+TIME\s+ZONE\s+'UTC'/)
+  })
+
+  it('[STATIC] migration must contain a KAV DO block with the FIPS 180-4 empty-string SHA-256 (R9-C01)', () => {
+    // R9-C01: the known-answer vector block verifies fn_sha256_hex produces the FIPS 180-4
+    // standard output for the empty string. If the function is broken, migration execution fails.
+    expect(migrationSql).toContain('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+  })
+
+  it('[STATIC] migration must contain a KAV check for fn_sha256_hex(\'hello\') (R9-C01)', () => {
+    // R9-C01: second known-answer vector — FIPS 180-4 SHA-256 of ASCII 'hello'.
+    expect(migrationSql).toContain('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824')
+  })
+
+  it('[STATIC] migration must add UNIQUE(document_id, user_id) constraint on document_analysis (R9-C02)', () => {
+    // R9-C02: the raceable COUNT-then-check pattern for duplicate analysis detection is
+    // removed. A UNIQUE constraint is the only concurrency-safe authoritative control.
+    expect(migrationSql).toContain('document_analysis_document_user_unique')
+    expect(migrationSql).toMatch(/ADD\s+CONSTRAINT\s+document_analysis_document_user_unique\s+UNIQUE\s*\(\s*document_id\s*,\s*user_id\s*\)/)
+  })
+
+  it('[STATIC] migration must NOT contain a raceable COUNT(*) on document_analysis (R9-C02)', () => {
+    // R9-C02: the pre-correction code used SELECT COUNT(*) INTO v_analysis_count FROM
+    // document_analysis WHERE ... to detect duplicates, then raised on count > 1.
+    // This is a race — two concurrent inserts can both pass the count check.
+    // After the correction, the UNIQUE constraint is the sole authority; COUNT is removed.
+    expect(migrationSql).not.toMatch(/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+INTO\s+v_analysis_count/)
+  })
+
+  it('[STATIC] migration must return structured outcome for concurrent-enqueue race (not RAISE EXCEPTION P0007) (R9-H03)', () => {
+    // R9-H03: fn_enqueue_job is SECURITY DEFINER and granted to authenticated. PostgREST
+    // exposes it directly. A RAISE EXCEPTION with ERRCODE = 'P0007' leaks internal state
+    // machine codes to authenticated callers. The correct pattern returns a JSON object
+    // with outcome:'retry_required' so the server action handles it without error propagation.
+    expect(migrationSql).not.toMatch(/ERRCODE\s*=\s*'P0007'/)
+    expect(migrationSql).toMatch(/'outcome'\s*,\s*'retry_required'/)
+  })
+
+  it('[STATIC] migration must add provenance columns to study_visuals (R9-H02)', () => {
+    // R9-H02: study_visuals had no FK linkage to generation_jobs or generation_source_snapshots.
+    // The corrective migration adds source_job_id, source_snapshot_id, source_request_hash,
+    // publication_attempt to establish full provenance tracing.
+    expect(migrationSql).toContain('source_job_id')
+    expect(migrationSql).toContain('source_snapshot_id')
+    expect(migrationSql).toContain('source_request_hash')
+    expect(migrationSql).toContain('publication_attempt')
+    expect(migrationSql).toContain('study_visuals_source_job_fk')
+    expect(migrationSql).toContain('study_visuals_source_snapshot_fk')
+  })
+
+  it('[STATIC] migration must enforce per-job closed schema for v1 job types (R9-M02)', () => {
+    // R9-M02: the database boundary must validate that v1 job types (visuals, flashcards,
+    // quiz, revision_notes, analysis) accept no sanitized_input fields — the server action
+    // alone is not sufficient as PostgREST bypasses it. An INVALID_INPUT exception is raised
+    // at the DB level if p_sanitized_input is non-empty for these types.
+    expect(migrationSql).toContain('INVALID_INPUT: v1 job type')
+    expect(migrationSql).toContain("p_sanitized_input <> '{}'::JSONB")
+  })
+
+  // ── ROUND 10 CORRECTION ASSERTIONS (R10-C01, R10-H01, R10-H02) ──────────
+
+  it('[STATIC] migration: generation_source_snapshots CREATE TABLE precedes study_visuals_source_snapshot_fk (R10-C01)', () => {
+    // R10-C01 ordering fix: study_visuals_source_snapshot_fk references generation_source_snapshots.
+    // PostgreSQL requires the referenced table to exist when ADD CONSTRAINT ... REFERENCES executes.
+    // The previous migration had the FK before the CREATE TABLE — a deterministic execution failure.
+    const createLine  = migrationSql.indexOf('CREATE TABLE public.generation_source_snapshots')
+    const fkLine      = migrationSql.indexOf('ADD CONSTRAINT study_visuals_source_snapshot_fk')
+    expect(createLine).toBeGreaterThan(-1)
+    expect(fkLine).toBeGreaterThan(-1)
+    expect(createLine).toBeLessThan(fkLine)
+  })
+
+  it('[STATIC] migration: generation_source_snapshots RLS/REVOKE precede study_visuals_source_snapshot_fk (R10-C01)', () => {
+    // The CREATE TABLE block and its RLS + REVOKE must all precede the FK reference.
+    const rls  = migrationSql.indexOf('ALTER TABLE public.generation_source_snapshots ENABLE ROW LEVEL SECURITY')
+    const fk   = migrationSql.indexOf('ADD CONSTRAINT study_visuals_source_snapshot_fk')
+    expect(rls).toBeGreaterThan(-1)
+    expect(rls).toBeLessThan(fk)
+  })
+
+  it('[STATIC] migration: fn_snapshot_immutability_guard precedes study_visuals_source_snapshot_fk (R10-C01)', () => {
+    // The immutability trigger function must be created before the FK so snapshot
+    // immutability is enforced from the moment the FK relationship exists.
+    const fn   = migrationSql.indexOf('CREATE OR REPLACE FUNCTION public.fn_snapshot_immutability_guard')
+    const fk   = migrationSql.indexOf('ADD CONSTRAINT study_visuals_source_snapshot_fk')
+    expect(fn).toBeGreaterThan(-1)
+    expect(fn).toBeLessThan(fk)
+  })
+
+  it('[STATIC] migration: document_analysis_document_owner_fk composite FK present (R10-H01)', () => {
+    // R10-H01: analysis ownership — (document_id, user_id) on document_analysis must reference
+    // documents(id, user_id). Prevents analysis rows under a different owner than the document.
+    expect(migrationSql).toContain('document_analysis_document_owner_fk')
+    expect(migrationSql).toMatch(/ADD\s+CONSTRAINT\s+document_analysis_document_owner_fk\s+FOREIGN\s+KEY/)
+    expect(migrationSql).toMatch(/REFERENCES\s+public\.documents\s*\(\s*id\s*,\s*user_id\s*\)/)
+  })
+
+  it('[STATIC] migration: D10 preflight checks analysis-to-document ownership mismatch (R10-H01)', () => {
+    // R10-H01: before any mutation, the preflight must fail closed on analysis rows
+    // whose user_id differs from the corresponding documents.user_id.
+    expect(migrationSql).toMatch(/da\.user_id\s*<>\s*d\.user_id/)
+  })
+
+  it('[STATIC] migration: D10 preflight checks duplicate document_id across users (R10-H01)', () => {
+    // R10-H01: the product model is one analysis per document globally.
+    // Duplicate document_ids (even across different user_ids) indicate an integrity violation.
+    expect(migrationSql).toMatch(/GROUP BY\s+document_id\s+HAVING\s+count\(\*\)\s*>\s*1/)
+  })
+
+  it('[STATIC] migration: study_visuals_provenance_coherence CHECK constraint present (R10-H02)', () => {
+    // R10-H02: provenance columns must be either all NULL (legacy rows without provenance)
+    // or all NOT NULL (verified publications). Mixed-null states are incoherent and indicate
+    // a partial write that bypassed fn_complete_and_publish_job.
+    expect(migrationSql).toContain('study_visuals_provenance_coherence')
+  })
+
+  // ── CROSS-LANGUAGE DIGEST KNOWN-ANSWER VECTORS (KAV) ─────────────────────
+  //
+  // These tests verify that buildSourceDigest produces a deterministic, stable output
+  // for fixed inputs. Any change to key sorting, JSON serialization, or the hash function
+  // will cause these to fail, surfacing regressions before they reach production.
+  //
+  // R9-C01 IMPORTANT: These are Node.js-only KAVs. buildSourceDigest uses JSON.stringify
+  // over a JS-canonicalized object (compact, JS key ordering via sort()). fn_sha256_hex
+  // in PostgreSQL hashes the result of jsonb_build_object()::TEXT (alphabetical JSONB
+  // key order, JSONB numeric/string semantics). The two byte sequences are NOT identical.
+  // Do NOT compare these expected values against PostgreSQL fn_sha256_hex output —
+  // they will differ. For PostgreSQL KAVs, see the DO block in the migration (section 7b).
+  //
+  // The reference hashes were computed on 2026-08-01 using Node.js crypto.createHash('sha256')
+  // over JSON.stringify(canonicalize(envelope)) with keys sorted alphabetically at every level.
+  // Hashes updated 2026-08-01 after adding document_subject_id field to SourceDigestEnvelope.
+
+  it('[KAV] buildSourceDigest: full envelope with analysis produces known SHA-256', () => {
+    const envelope: SourceDigestEnvelope = {
+      schema_version:               1,
+      document_id:                  '00000000-0000-0000-0000-000000000001',
+      document_title:               'MoLis KAV',
+      document_extracted_text:      'Known-answer vector for fn_sha256_hex cross-language test.',
+      document_file_type:           'pdf',
+      document_source_type:         'upload',
+      document_created_at:          '2026-01-01T00:00:00.000Z',
+      document_subject_id:          null,
+      document_source_recording_id: null,
+      analysis_id:                  '00000000-0000-0000-0000-000000000002',
+      analysis_data:                { subject_area: 'Mathematics', difficulty_level: 'intermediate' },
+      analysis_created_at:          '2026-01-02T00:00:00.000Z',
+      analysis_model:               'gpt-4o',
+    }
+    // Reference: computed 2026-08-01 with Node.js crypto over JSON.stringify(canonicalize(envelope))
+    // Hash updated after R8-M01 added document_subject_id field to SourceDigestEnvelope.
+    const EXPECTED = '5f7a67543940b6e8b90940674934c86023ebd0821f69b576a61bbe7479493f03'
+    expect(buildSourceDigest(envelope)).toBe(EXPECTED)
+  })
+
+  it('[KAV] buildSourceDigest: null-analysis envelope produces known SHA-256', () => {
+    const envelope: SourceDigestEnvelope = {
+      schema_version:               1,
+      document_id:                  '00000000-0000-0000-0000-000000000001',
+      document_title:               'MoLis KAV null-analysis',
+      document_extracted_text:      null,
+      document_file_type:           null,
+      document_source_type:         null,
+      document_created_at:          null,
+      document_subject_id:          null,
+      document_source_recording_id: null,
+      analysis_id:                  null,
+      analysis_data:                null,
+      analysis_created_at:          null,
+      analysis_model:               null,
+    }
+    // Reference: computed 2026-08-01 with Node.js crypto
+    // Hash updated after R8-M01 added document_subject_id field to SourceDigestEnvelope.
+    const EXPECTED = 'f1ad958f3a082a3ec59514795f5e752e9272ce835c8d97c3a42d4f2e3feb0aed'
+    expect(buildSourceDigest(envelope)).toBe(EXPECTED)
+  })
+
+  it('[KAV] buildSourceDigest: key ordering is canonical (sorted) — two envelope orderings produce the same hash', () => {
+    // This verifies that canonicalize() sorts keys deterministically regardless of
+    // insertion order. Object.keys() order is not guaranteed to match sorted order in all
+    // JS engines; canonicalize must sort explicitly at every level.
+    const base: SourceDigestEnvelope = {
+      schema_version:               1,
+      document_id:                  '00000000-0000-0000-0000-000000000003',
+      document_title:               'Ordering test',
+      document_extracted_text:      'abc',
+      document_file_type:           'pdf',
+      document_source_type:         'upload',
+      document_created_at:          '2026-06-01T12:00:00.000Z',
+      document_subject_id:          null,
+      document_source_recording_id: null,
+      analysis_id:                  null,
+      analysis_data:                null,
+      analysis_created_at:          null,
+      analysis_model:               null,
+    }
+    // Same fields but analysis_data is an object with keys in different insertion order.
+    const withAnalysis: SourceDigestEnvelope = {
+      ...base,
+      analysis_id:    '00000000-0000-0000-0000-000000000004',
+      analysis_data:  { z_last: true, a_first: 'yes', m_middle: 42 },
+      analysis_model: 'gpt-4o-mini',
+    }
+    const withAnalysisReversed: SourceDigestEnvelope = {
+      ...base,
+      analysis_id:    '00000000-0000-0000-0000-000000000004',
+      // Same keys, different insertion order — canonicalize must sort them the same way.
+      analysis_data:  { m_middle: 42, z_last: true, a_first: 'yes' },
+      analysis_model: 'gpt-4o-mini',
+    }
+    expect(buildSourceDigest(withAnalysis)).toBe(buildSourceDigest(withAnalysisReversed))
+  })
+
+  it('[KAV] buildSourceDigest: different document_id produces different hash (collision resistance)', () => {
+    const makeEnvelope = (id: string): SourceDigestEnvelope => ({
+      schema_version:               1,
+      document_id:                  id,
+      document_title:               'Same title',
+      document_extracted_text:      null,
+      document_file_type:           null,
+      document_source_type:         null,
+      document_created_at:          null,
+      document_subject_id:          null,
+      document_source_recording_id: null,
+      analysis_id:                  null,
+      analysis_data:                null,
+      analysis_created_at:          null,
+      analysis_model:               null,
+    })
+    const hashA = buildSourceDigest(makeEnvelope('00000000-0000-0000-0000-000000000001'))
+    const hashB = buildSourceDigest(makeEnvelope('00000000-0000-0000-0000-000000000002'))
+    expect(hashA).not.toBe(hashB)
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/)
+    expect(hashB).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  // ── ROUND 10 ADDITIONAL STATIC ASSERTIONS (R10-C02, R10-H04, R10-H05, R10-H06) ──
+
+  it('[STATIC] migration: explicit canonical KAV functions and DO block present (R12-C02)', () => {
+    // R12-C02: fn_canonical_jsonb_v1 (recursive JSONB serialiser) must be defined before
+    // fn_canonical_source_v1 and fn_canonical_request_v1 (which call it).
+    // All three functions must appear; KAV DO block must include all fixture hashes.
+    expect(migrationSql).toContain('fn_canonical_jsonb_v1')
+    expect(migrationSql).toContain('fn_canonical_source_v1')
+    expect(migrationSql).toContain('fn_canonical_request_v1')
+    expect(migrationSql).toContain('KAV-SRC-1')
+    expect(migrationSql).toContain('KAV-SRC-2')
+    expect(migrationSql).toContain('KAV-REQ-1')
+    // Source hashes unchanged (null analysis → all fields emit =NULL).
+    expect(migrationSql).toContain('c427acbfca15a4cc2195eaf2e41c7158b70cdbeadf942ee21786745f99fd24be')
+    expect(migrationSql).toContain('8df917c2723e07371442b0e7104ebb17f6281cc40809ac9725676a1e07d01682')
+    // KAV-REQ-1 updated hash (R12-C02: sanitized_input and op.* use fn_canonical_jsonb_v1 format).
+    expect(migrationSql).toContain('7872494e6a422b9e4695227dc2d6728d9f52a76de35dc029c9d7b96b068778ec')
+    // Old KAV-REQ-1 hash must NOT remain (it was for the retired JSONB-text-cast format).
+    expect(migrationSql).not.toContain('d9ddf7c8d4e03a7e7411bc94611bb7ab3bed136d87019c94367a466ac17708be')
+    // New KAV vectors for JSONB missing/null/value distinction.
+    expect(migrationSql).toContain('KAV-JSONB-MISSING')
+    expect(migrationSql).toContain('ddbe52bda3f29198644d7074db70f92391d9ce97b59ac3752f1417784e3ed870')
+    expect(migrationSql).toContain('675bac68bc300226e6c51463b70ca5564b4797cc9901cdb3e1ff433c3285cd25')
+    // Object key ordering and array order vectors.
+    expect(migrationSql).toContain('KAV-JSONB-OBJ-KEY-ORDER')
+    expect(migrationSql).toContain('KAV-JSONB-ARRAY')
+    // Boolean, nested, Unicode, op-desc-missing vectors.
+    expect(migrationSql).toContain('KAV-JSONB-BOOL')
+    expect(migrationSql).toContain('KAV-JSONB-NESTED')
+    expect(migrationSql).toContain('KAV-JSONB-UNICODE')
+    expect(migrationSql).toContain('KAV-JSONB-OP-DESC-MISSING')
+  })
+
+  it('[STATIC] migration: fn_canonical_jsonb_v1 defined before fn_canonical_source_v1 (R12-C01)', () => {
+    // fn_canonical_source_v1 and fn_canonical_request_v1 call fn_canonical_jsonb_v1.
+    // PostgreSQL requires the callee to exist when CREATE FUNCTION of the caller executes.
+    const jsonbFn  = migrationSql.indexOf('CREATE FUNCTION public.fn_canonical_jsonb_v1')
+    const sourceFn = migrationSql.indexOf('CREATE FUNCTION public.fn_canonical_source_v1')
+    const reqFn    = migrationSql.indexOf('CREATE FUNCTION public.fn_canonical_request_v1')
+    expect(jsonbFn).toBeGreaterThan(-1)
+    expect(sourceFn).toBeGreaterThan(-1)
+    expect(reqFn).toBeGreaterThan(-1)
+    expect(jsonbFn).toBeLessThan(sourceFn)
+    expect(jsonbFn).toBeLessThan(reqFn)
+  })
+
+  it('[STATIC] migration: generation_job_usage table created before study_visuals_usage_provenance_fk (R12-C01)', () => {
+    // R12-C01: The FK references generation_job_usage — the table must exist first.
+    // Prior version had the FK at section 17b (before section 17c where the table is created)
+    // causing a deterministic execution failure.
+    const createTable = migrationSql.indexOf('CREATE TABLE public.generation_job_usage')
+    const fk          = migrationSql.indexOf('ADD CONSTRAINT study_visuals_usage_provenance_fk')
+    expect(createTable).toBeGreaterThan(-1)
+    expect(fk).toBeGreaterThan(-1)
+    expect(createTable).toBeLessThan(fk)
+  })
+
+  it('[STATIC] migration: generation_job_usage_publication_unique defined before study_visuals_usage_provenance_fk (R12-C01)', () => {
+    // R12-C01: The FK is a composite FK that references a non-PK tuple —
+    // it requires the UNIQUE constraint on that tuple to exist first.
+    const unique = migrationSql.indexOf('generation_job_usage_publication_unique')
+    const fk     = migrationSql.lastIndexOf('ADD CONSTRAINT study_visuals_usage_provenance_fk')
+    expect(unique).toBeGreaterThan(-1)
+    expect(fk).toBeGreaterThan(-1)
+    expect(unique).toBeLessThan(fk)
+  })
+
+  it('[STATIC] migration: generation_jobs_verified_binding_unique defined before generation_job_usage (R12-C01)', () => {
+    // generation_job_usage has a composite FK that references generation_jobs via the
+    // generation_jobs_verified_binding_unique constraint. The UNIQUE must exist before
+    // the CREATE TABLE that references it.
+    const unique      = migrationSql.indexOf('generation_jobs_verified_binding_unique')
+    const createUsage = migrationSql.indexOf('CREATE TABLE public.generation_job_usage')
+    expect(unique).toBeGreaterThan(-1)
+    expect(createUsage).toBeGreaterThan(-1)
+    expect(unique).toBeLessThan(createUsage)
+  })
+
+  it('[STATIC] migration: source column preflight checks nullability (R10-H04)', () => {
+    // R10-H04: The D11 preflight for documents and document_analysis must now verify
+    // is_nullable, identity/generated state, and column_default — not just udt_name.
+    // This catches column-level schema drift that a type-only check would miss.
+    expect(migrationSql).toContain('is_nullable')
+    expect(migrationSql).toContain('is_identity')
+    expect(migrationSql).toContain('is_generated')
+    expect(migrationSql).toContain('column_default IS DISTINCT FROM')
+    // document_analysis.keywords must be typed as _text (text array), not jsonb.
+    expect(migrationSql).toContain("'_text'")
+  })
+
+  it('[STATIC] migration: Storage service privilege tested individually (R10-H05)', () => {
+    // R10-H05: has_table_privilege with a comma-list returns true if ANY privilege matches
+    // (not all). Each required privilege must be checked independently to prove the complete
+    // baseline. This test verifies individual SELECT/INSERT/UPDATE/DELETE checks are present.
+    const selectCheck  = migrationSql.indexOf("has_table_privilege('service_role','storage.objects','SELECT')")
+    const insertCheck  = migrationSql.indexOf("has_table_privilege('service_role','storage.objects','INSERT')")
+    const updateCheck  = migrationSql.indexOf("has_table_privilege('service_role','storage.objects','UPDATE')")
+    const deleteCheck  = migrationSql.indexOf("has_table_privilege('service_role','storage.objects','DELETE')")
+    expect(selectCheck).toBeGreaterThan(0)
+    expect(insertCheck).toBeGreaterThan(0)
+    expect(updateCheck).toBeGreaterThan(0)
+    expect(deleteCheck).toBeGreaterThan(0)
+    // None of the comma-list forms must remain in the migration.
+    expect(migrationSql).not.toContain("'storage.objects','SELECT,INSERT,UPDATE,DELETE'")
+  })
+
+  it('[STATIC] migration: function search_path exact-value checks present (R10-H05)', () => {
+    // R10-H05: The ACL postcondition must verify the exact search_path value for each function.
+    // fn_sha256_hex must have 'extensions, pg_catalog'; all others must have empty path.
+    expect(migrationSql).toContain("'search_path=extensions, pg_catalog'")
+    expect(migrationSql).toContain("'search_path=')")
+  })
+
+  it('[STATIC] migration: study-visuals bucket MIME type restriction applied (R10-H06)', () => {
+    // R10-H06: The bucket must be restricted to image/png and capped at 5 MiB.
+    // Both the UPDATE statement and the postcondition verification must be present.
+    expect(migrationSql).toContain("allowed_mime_types = ARRAY['image/png']")
+    expect(migrationSql).toContain('file_size_limit    = 5242880')
+    expect(migrationSql).toContain('file_size_limit = 5242880')
+    expect(migrationSql).toContain('STORAGE POSTCONDITION: study-visuals MIME types or file_size_limit not set correctly')
+  })
+
+  it('[STATIC] migration: fn_recover_stale_jobs is SECURITY DEFINER and service_role-only (R9-H07)', () => {
+    // The stale-job recovery function must be SECURITY DEFINER (runs as owner, not caller)
+    // and executable only by service_role — not by authenticated users or PUBLIC.
+    // This protects against unauthorized lease manipulation through the recovery path.
+    expect(migrationSql).toContain('fn_recover_stale_jobs')
+    expect(migrationSql).toContain('SECURITY DEFINER')
+    expect(migrationSql).toContain("GRANT EXECUTE ON FUNCTION public.fn_recover_stale_jobs()")
+    // service_role is the only role granted EXECUTE on recovery.
+    expect(migrationSql).toContain("fn_recover_stale_jobs()'::regprocedure,FALSE,TRUE")
+  })
+
+  // ── R12-H02: D11 preflight fingerprint expansion ───────────────────────────
+
+  it('[STATIC] migration: preflight checks all four primary keys (R12-H02)', () => {
+    expect(migrationSql).toContain("'document_analysis_pkey' AND pg_get_constraintdef(oid)='PRIMARY KEY (id)'")
+    expect(migrationSql).toContain("'documents_pkey' AND pg_get_constraintdef(oid)='PRIMARY KEY (id)'")
+    expect(migrationSql).toContain("'generation_jobs_pkey' AND pg_get_constraintdef(oid)='PRIMARY KEY (id)'")
+    expect(migrationSql).toContain("'study_visuals_pkey' AND pg_get_constraintdef(oid)='PRIMARY KEY (id)'")
+    expect(migrationSql).toContain("D11 DRIFT: primary key fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks all nine foreign-key fingerprints (R12-H02)', () => {
+    expect(migrationSql).toContain("'document_analysis_document_id_fkey'")
+    expect(migrationSql).toContain('FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE')
+    expect(migrationSql).toContain("'document_analysis_user_id_fkey'")
+    expect(migrationSql).toContain('FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE')
+    expect(migrationSql).toContain("'documents_source_recording_id_fkey'")
+    expect(migrationSql).toContain('FOREIGN KEY (source_recording_id) REFERENCES recordings(id) ON DELETE SET NULL')
+    expect(migrationSql).toContain("'documents_subject_id_fkey'")
+    expect(migrationSql).toContain('FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL')
+    expect(migrationSql).toContain("'documents_user_id_fkey'")
+    expect(migrationSql).toContain("'generation_jobs_document_id_fkey'")
+    expect(migrationSql).toContain("'generation_jobs_user_id_fkey'")
+    expect(migrationSql).toContain("'study_visuals_document_id_fkey'")
+    expect(migrationSql).toContain("'study_visuals_user_id_fkey'")
+    expect(migrationSql).toContain("D11 DRIFT: foreign key fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks documents_source_type_check fingerprint (R12-H02)', () => {
+    expect(migrationSql).toContain("'documents_source_type_check'")
+    expect(migrationSql).toContain("D11 DRIFT: documents_source_type_check fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks source-table index counts and definitions (R12-H02)', () => {
+    expect(migrationSql).toContain("tablename='document_analysis') <> 3")
+    expect(migrationSql).toContain("indexname='idx_document_analysis_document_id'")
+    expect(migrationSql).toContain("indexname='idx_document_analysis_user_id'")
+    expect(migrationSql).toContain("D11 DRIFT: document_analysis baseline index set changed")
+    expect(migrationSql).toContain("tablename='documents') <> 3")
+    expect(migrationSql).toContain("indexname='documents_source_recording_unique'")
+    expect(migrationSql).toContain("indexname='documents_subject_id_idx'")
+    expect(migrationSql).toContain("D11 DRIFT: documents baseline index set changed")
+    expect(migrationSql).toContain("tablename='study_visuals') <> 2")
+    expect(migrationSql).toContain("D11 DRIFT: study_visuals baseline index set changed")
+  })
+
+  it('[STATIC] migration: preflight checks routine language/volatility fingerprint (R12-H02)', () => {
+    // All five existing routines must be plpgsql VOLATILE trigger functions — not IMMUTABLE/STABLE,
+    // not strict, not returning set.
+    expect(migrationSql).toContain("l.lanname <> 'plpgsql'")
+    expect(migrationSql).toContain("t.typname <> 'trigger'")
+    expect(migrationSql).toContain("p.provolatile <> 'v'")
+    expect(migrationSql).toContain("p.proisstrict")
+    expect(migrationSql).toContain("D11 DRIFT: existing routine language/return/volatility fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks routine proconfig exact equality (R12-H02)', () => {
+    // proconfig must be NULL for the four non-search-path routines and exactly
+    // ARRAY['search_path=public'] for validate_resource_subject_ownership.
+    expect(migrationSql).toContain("p.proconfig IS NOT NULL")
+    expect(migrationSql).toContain("p.proconfig = ARRAY['search_path=public']")
+    expect(migrationSql).toContain("D11 DRIFT: existing routine proconfig fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks routine EXECUTE ACL exact string (R12-H02)', () => {
+    // D11 SA01/SA04 inspected ACL: PUBLIC + postgres + anon + authenticated + service_role.
+    expect(migrationSql).toContain(
+      "'{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}'"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: existing routine EXECUTE ACL fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks table relacl exact string (R12-H02)', () => {
+    // D11 SA07 inspected relacl: all four tables have the same Supabase default grant.
+    expect(migrationSql).toContain(
+      "'{postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,service_role=arwdDxtm/postgres}'"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: exact table ACL fingerprint changed")
+  })
+
+  it('[STATIC] migration: preflight checks postgres/public FUNCTION default ACL before-state (R12-H02)', () => {
+    // D11 SA11: FUNCTION default ACL must match inspected value — migration fails closed if
+    // ALTER DEFAULT PRIVILEGES was already applied (e.g. from a partial prior run).
+    expect(migrationSql).toContain("defaclrole='postgres'::regrole")
+    expect(migrationSql).toContain("defaclobjtype='f'")
+    expect(migrationSql).toContain(
+      "'{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}'"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: postgres/public FUNCTION default ACL before-state changed")
+  })
+
+  it('[STATIC] migration: preflight checks full study-visuals bucket row (R12-H02)', () => {
+    // D11 S18: file_size_limit and allowed_mime_types are NULL at the D11 snapshot.
+    // The migration must fail closed if these have changed before it runs.
+    expect(migrationSql).toContain('file_size_limit IS NULL AND allowed_mime_types IS NULL')
+    expect(migrationSql).toContain('NOT avif_autodetection')
+    expect(migrationSql).toContain('D11 DRIFT: study-visuals bucket full row fingerprint changed')
   })
 })

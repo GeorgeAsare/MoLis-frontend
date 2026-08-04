@@ -2,9 +2,9 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { logger } from '@/lib/logger'
-import { buildRequestIdempotencyKey, buildPayloadHash } from '@/lib/jobs/idempotencyKey'
-import { ENQUEUE_RETRY_REQUIRED } from '@/lib/jobs/enqueueErrors'
-import type { GenerationJob, GenerationJobType } from '@/types/generationJob'
+import { buildRequestIdempotencyKey } from '@/lib/jobs/idempotencyKey'
+import { ENQUEUE_RETRY_REQUIRED, classifyEnqueueError } from '@/lib/jobs/enqueueErrors'
+import type { GenerationJobType } from '@/types/generationJob'
 import type { JobSafeDto, EnqueueResult } from '@/lib/jobs/stateMachine'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,15 +32,22 @@ import type { JobSafeDto, EnqueueResult } from '@/lib/jobs/stateMachine'
 //      - fn_enqueue_job atomically records every accepted (user, request_key) → job_id
 //        binding in generation_job_requests — including D2 bindings where the key is
 //        mapped to an already-active job. The ledger is the authoritative mapping.
-//      - Same key + same payload → returns the associated job (any status incl. terminal).
-//      - Same key + different payload → explicit P0004 IDEMPOTENCY_PAYLOAD_CONFLICT.
+//      - Fast path: if the scoped key is already in the ledger, fn_enqueue_job validates
+//        document ownership and job type before returning the bound job (any status,
+//        including terminal). No new snapshot, job, or ledger row is created.
 //      - Terminal jobs hold the ledger slot permanently; a new key is required for a new
 //        attempt. The client must call clearPendingRequestKey + generate a new UUID.
 //
-//   B. Payload hash — canonical envelope (H03):
-//      Hashes { schema_version, operation_kind, document_id, job_type, sanitized_input }.
-//      Server-validated fields only. user_id excluded (already scoped by ledger key).
-//      Changing document_id or job_type while reusing the same key → P0004 conflict.
+//   B. Request hash — canonical envelope computed by fn_enqueue_job in PostgreSQL:
+//      SHA-256 over { schema_version, source_digest, job_type, operation_descriptor,
+//      sanitized_input } serialised by fn_canonical_jsonb_v1 — an explicit recursive
+//      canonicalisation contract (keys sorted at every nesting level, arrays preserve order).
+//      Hashing does not rely on JSONB rendering or JSONB key order.
+//      source_digest captures the full document+analysis content at enqueue time.
+//      operation_descriptor is server-derived (text_model, image_model, etc.) and
+//      cannot be manipulated by callers. Stored in generation_job_requests.request_payload_hash.
+//      PostgreSQL is authoritative; TypeScript helpers in idempotencyKey.ts are
+//      non-authoritative reference implementations only.
 //
 //   C. Active-job exclusion (independent of A):
 //      Partial unique index on generation_jobs prevents concurrent active jobs.
@@ -51,16 +58,49 @@ import type { JobSafeDto, EnqueueResult } from '@/lib/jobs/stateMachine'
 //      P0001 NOT_AUTHENTICATED
 //      P0002 INVALID_JOB_TYPE
 //      P0003 DOCUMENT_NOT_FOUND_OR_NOT_OWNED
-//      P0004 IDEMPOTENCY_PAYLOAD_CONFLICT
-//      P0007 ENQUEUE_CONCURRENT_TERMINAL — rare; one automatic server retry; 503 if unresolved
-//      P0008 INVALID_IDEMPOTENCY_KEY
-//      P0009 INVALID_PAYLOAD_HASH
-//      P0010 INVALID_INPUT
+//      P0008 INVALID_IDEMPOTENCY_KEY_FORMAT or INVALID_IDEMPOTENCY_KEY_OWNER
+//      P0010 INVALID_INPUT (null p_sanitized_input)
+//      P0017 DOCUMENT_REVISION_CHANGED — document content changed since active job was queued
+//      P0018 DUPLICATE_ANALYSIS — multiple analysis rows exist; D10 quarantine applied
+//   Concurrent new-job races return {outcome:'retry_required'} (not a SQLSTATE error).
+//   The server action retries once automatically; throws ENQUEUE_RETRY_REQUIRED if unresolved.
 //
+// R7-M02: closed, versioned input schema per job type.
+// Each job type declares its allowed input keys. Any unknown key is rejected before
+// the RPC call. This prevents callers from accidentally sending server-internal fields
+// and documents the expected input contract for each job type.
+// Version 1 schemas (extend when job types add configurable caller input).
+const SANITIZED_INPUT_SCHEMA_V1: Record<GenerationJobType, ReadonlyArray<string>> = {
+  visuals:        [],   // no user-controlled input fields in v1
+  flashcards:     [],
+  quiz:           [],
+  revision_notes: [],
+  analysis:       [],
+}
+
+function validateSanitizedInput(
+  jobType: GenerationJobType,
+  input: unknown,
+): Record<string, unknown> {
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('INVALID_INPUT: sanitized_input must be a non-null, non-array object')
+  }
+  const schema = SANITIZED_INPUT_SCHEMA_V1[jobType]
+  if (!schema) {
+    throw new Error(`INVALID_JOB_TYPE: no input schema for job type ${String(jobType)}`)
+  }
+  const obj = input as Record<string, unknown>
+  const unknownKeys = Object.keys(obj).filter(k => !schema.includes(k))
+  if (unknownKeys.length > 0) {
+    throw new Error(`INVALID_INPUT: unexpected input keys for job type ${String(jobType)}: ${unknownKeys.join(', ')}`)
+  }
+  return obj
+}
+
 // Enqueue a new job or return the existing active job (D2).
 // Calls fn_enqueue_job security-definer RPC.
-// On P0007 (concurrent terminal race), retries once with identical key + hash.
-// If P0007 persists, throws ENQUEUE_RETRY_REQUIRED for the route to return 503.
+// On a concurrent new-job race (outcome='retry_required'), retries once with the same key.
+// If still unresolved, throws ENQUEUE_RETRY_REQUIRED for the route to return 503.
 // Fails explicitly if the RPC does not exist (migration not yet applied).
 export async function enqueueJob(
   documentId: string,
@@ -72,6 +112,9 @@ export async function enqueueJob(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error('NOT_AUTHENTICATED')
 
+  // R7-M02: validate sanitized input against the closed per-job-type schema before RPC call.
+  const validatedInput = validateSanitizedInput(jobType, sanitizedInputData)
+
   // Validate incomingRequestKey format: must be a UUID (36-char with hyphens).
   const isValidUuid = incomingRequestKey != null &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(incomingRequestKey)
@@ -80,52 +123,65 @@ export async function enqueueJob(
   const requestKey = isValidUuid ? incomingRequestKey! : buildRequestIdempotencyKey()
   const idempotencyKey = `${user.id}:${requestKey}`
 
-  // Canonical payload hash — includes server-validated document_id and job_type
-  // so that a key cannot be reused for a different resource or operation.
-  const payloadHash = buildPayloadHash({
-    schema_version:  1,
-    operation_kind:  jobType,
-    document_id:     documentId,
-    job_type:        jobType,
-    sanitized_input: sanitizedInputData,
-  })
-
+  // Source capture, canonical hashing, and snapshot creation are performed atomically
+  // inside fn_enqueue_job (SECURITY DEFINER). The authenticated caller supplies only
+  // the bare request key and optional sanitized input — the database derives all
+  // authoritative values: user identity, document ownership, source content snapshot,
+  // SHA-256 source digest, and execution descriptor.
   const rpcArgs = {
-    p_document_id:      documentId,
-    p_job_type:         jobType,
-    p_idempotency_key:  idempotencyKey,
-    p_payload_hash:     payloadHash,
-    p_sanitized_input:  sanitizedInputData,
+    p_document_id:     documentId,
+    p_job_type:        jobType,
+    p_idempotency_key: idempotencyKey,
+    p_sanitized_input: validatedInput,
   }
 
   const { data, error } = await supabase.rpc('fn_enqueue_job', rpcArgs)
 
   if (error) {
-    logger.warn('job.enqueue_rpc_failed', { job_type: jobType, pg_code: error.code })
-
-    // P0007: a concurrent request inserted and immediately completed a job before this
-    // transaction could bind the key. Retry exactly ONCE with the identical key and hash.
-    // If unresolved, throw ENQUEUE_RETRY_REQUIRED so the route can return 503.
-    if (error.code === 'P0007') {
-      logger.warn('job.enqueue_p0007_retry', { job_type: jobType })
-      const { data: retryData, error: retryError } = await supabase.rpc('fn_enqueue_job', rpcArgs)
-      if (retryError) {
-        logger.warn('job.enqueue_p0007_retry_failed', { job_type: jobType, pg_code: retryError.code })
-        throw new Error(ENQUEUE_RETRY_REQUIRED)
-      }
-      const retryResult = retryData as { job_id: string; is_existing: boolean; status: string; request_key: string | null }
-      return {
-        job_id:      retryResult.job_id,
-        is_existing: retryResult.is_existing,
-        status:      retryResult.status as EnqueueResult['status'],
-        requestKey:  retryResult.request_key ?? requestKey,
-      }
-    }
-
-    throw new Error(`ENQUEUE_FAILED:${error.code ?? 'UNKNOWN'}`)
+    // Log only the classified error name — never the raw SQLSTATE code.
+    logger.warn('job.enqueue_rpc_failed', { job_type: jobType, error_class: classifyEnqueueError(error.code) })
+    throw new Error(classifyEnqueueError(error.code))
   }
 
-  const result = data as { job_id: string; is_existing: boolean; status: string; request_key: string | null }
+  const result = data as {
+    outcome?:    string
+    job_id:      string | null
+    is_existing: boolean
+    status:      string
+    request_key: string | null
+  }
+
+  // R9-H03: fn_enqueue_job returns {outcome:'retry_required'} instead of raising P0007.
+  // This prevents PostgREST SQLSTATE exposure to authenticated callers who call the
+  // RPC directly. The server action retries exactly once with the identical key.
+  if (result.outcome === 'retry_required') {
+    logger.warn('job.enqueue.concurrent_binding', { job_type: jobType })
+    const { data: retryData, error: retryError } = await supabase.rpc('fn_enqueue_job', rpcArgs)
+    if (retryError) {
+      logger.warn('job.enqueue.concurrent_binding_retry_failed', { job_type: jobType, error_class: classifyEnqueueError(retryError.code) })
+      throw new Error(classifyEnqueueError(retryError.code))
+    }
+    const retryResult = retryData as {
+      outcome?:    string
+      job_id:      string | null
+      is_existing: boolean
+      status:      string
+      request_key: string | null
+    }
+    if (retryResult.outcome === 'retry_required') {
+      // Still unresolved after one retry — caller gets 503.
+      throw new Error(ENQUEUE_RETRY_REQUIRED)
+    }
+    if (!retryResult.job_id) throw new Error(ENQUEUE_RETRY_REQUIRED)
+    return {
+      job_id:      retryResult.job_id,
+      is_existing: retryResult.is_existing,
+      status:      retryResult.status as EnqueueResult['status'],
+      requestKey:  retryResult.request_key ?? requestKey,
+    }
+  }
+
+  if (!result.job_id) throw new Error(ENQUEUE_RETRY_REQUIRED)
   return {
     job_id:      result.job_id,
     is_existing: result.is_existing,
@@ -148,8 +204,8 @@ export async function requestJobCancel(jobId: string): Promise<{ newStatus: stri
   })
 
   if (error) {
-    logger.warn('job.cancel_rpc_failed', { job_id: jobId, pg_code: error.code })
-    throw new Error(`CANCEL_FAILED:${error.code ?? 'UNKNOWN'}`)
+    logger.warn('job.cancel_rpc_failed', { job_id: jobId, error_class: 'rpc_error' })
+    throw new Error('CANCEL_FAILED')
   }
 
   const result = data as { new_status: string; action: string }
@@ -178,7 +234,7 @@ export async function getJobSafeDto(jobId: string): Promise<JobSafeDto | null> {
   })
 
   if (error) {
-    logger.warn('job.get_safe_dto_failed', { job_id: jobId, pg_code: error.code })
+    logger.warn('job.get_safe_dto_failed', { job_id: jobId, error_class: 'rpc_error' })
     return null
   }
 
@@ -202,7 +258,7 @@ export async function getActiveJobForDocument(
   })
 
   if (error) {
-    logger.warn('job.get_active_job_failed', { document_id: documentId, pg_code: error.code })
+    logger.warn('job.get_active_job_failed', { document_id: documentId, error_class: 'rpc_error' })
     return null
   }
 
@@ -231,78 +287,39 @@ function mapRawToJobSafeDto(raw: Record<string, unknown>): JobSafeDto {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEPRECATED — server-internal use only during the migration transition period
+// R9-M02: Deprecated direct base-table server actions — hard-disabled.
 //
-// These functions write directly to the generation_jobs base table.
-// After migration 20260729120001 is applied:
-//   - createGenerationJob: fails (INSERT revoked from authenticated role)
-//   - cancelGenerationJob: fails (UPDATE blocked; use requestJobCancel RPC instead)
-//
-// Do NOT call these from new code. They are retained until Phase 2 cleanup only.
+// After migration 20260729120001 is applied, direct INSERT/UPDATE on generation_jobs
+// is revoked from authenticated. These stubs throw immediately so callers discover
+// the breakage at development time rather than at runtime. Use enqueueJob() and
+// requestJobCancel() instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** @deprecated Use enqueueJob() instead. Will fail after migration 20260729120001. */
+/** @deprecated Hard-disabled. Use enqueueJob() instead. */
 export async function createGenerationJob(
-  documentId: string,
-  jobType: GenerationJobType,
-  inputData?: Record<string, unknown>,
-): Promise<GenerationJob> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error('Not authenticated')
-
-  const { data: doc } = await supabase
-    .from('documents')
-    .select('user_id')
-    .eq('id', documentId)
-    .single()
-  if (!doc || doc.user_id !== user.id) throw new Error('Not authorized')
-
-  await supabase
-    .from('generation_jobs')
-    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-    .eq('user_id', user.id)
-    .eq('document_id', documentId)
-    .eq('job_type', jobType)
-    .in('status', ['queued', 'processing'])
-
-  const { data, error } = await supabase
-    .from('generation_jobs')
-    .insert({
-      user_id:     user.id,
-      document_id: documentId,
-      job_type:    jobType,
-      status:      'queued',
-      input_data:  inputData ?? null,
-    })
-    .select()
-    .single()
-
-  if (error || !data) throw new Error(error?.message ?? 'Failed to create job')
-  logger.info('job.created.deprecated_path', { job_type: jobType })
-  return data as GenerationJob
-}
-
-/** @deprecated Use requestJobCancel() instead. Will fail after migration 20260729120001. */
-export async function cancelGenerationJob(jobId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
-
-  await supabase
-    .from('generation_jobs')
-    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-    .eq('id', jobId)
-    .eq('user_id', user.id)
-    .in('status', ['queued', 'processing'])
-}
-
-// updateJobStatus — FULLY DEPRECATED (no remaining callers)
-/** @deprecated No callers remain. Will throw on call. Remove in Phase 3 cleanup. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function updateJobStatus(...args: unknown[]): Promise<void> {
+  _documentId: string,
+  _jobType: GenerationJobType,
+  _inputData?: Record<string, unknown>,
+): Promise<never> {
   throw new Error(
-    'updateJobStatus is deprecated and has no remaining callers. ' +
-    'Use fn_claim_job / fn_complete_job / fn_fail_job RPCs via workerClient.',
+    'createGenerationJob is removed. Direct base-table inserts are not permitted after ' +
+    'migration 20260729120001. Use enqueueJob() via the fn_enqueue_job RPC.',
+  )
+}
+
+/** @deprecated Hard-disabled. Use requestJobCancel() instead. */
+export async function cancelGenerationJob(_jobId: string): Promise<never> {
+  throw new Error(
+    'cancelGenerationJob is removed. Direct base-table updates are not permitted after ' +
+    'migration 20260729120001. Use requestJobCancel() via fn_request_job_cancel.',
+  )
+}
+
+/** @deprecated Hard-disabled. No callers remain. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function updateJobStatus(..._args: unknown[]): Promise<never> {
+  throw new Error(
+    'updateJobStatus is removed. Use fn_claim_job / fn_complete_job / fn_fail_job ' +
+    'RPCs via workerClient.',
   )
 }

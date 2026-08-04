@@ -4,13 +4,15 @@
 //
 // Security model:
 //   - Requires authentication (user session verified via createClient).
-//   - Verifies document ownership (user_id on study_visuals row must match auth.uid()).
-//   - Uses service-role client to issue signed URLs (bypasses bucket public=false).
+//   - fn_get_owner_study_visuals verifies ownership and returns public-safe fields
+//     only (no storage_path, no image_prompt — stripped at the DB boundary by R8-H04).
+//   - fn_get_visuals_signing_manifest (service_role only) returns raw storage_path
+//     values for URL signing. Never callable by authenticated users directly.
 //   - Signed URLs are valid for 5 minutes (VISUALS_SIGNED_URL_EXPIRY_SECONDS).
-//   - Never returns a public URL or storage path directly to the client.
+//   - Storage path prefix validated before signing: must start with {userId}/{documentId}/
 //   - Fails closed: missing ownership or signing error → 403/500 with opaque message.
 //
-// The response is a StudyVisualSet with image_url populated (signed URL) for each
+// The response is a PublicVisualSet with image_url populated (signed URL) for each
 // generated item. Failed or pending items have image_url = null.
 
 import { NextResponse } from 'next/server'
@@ -18,7 +20,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/serviceClient'
 import { logger } from '@/lib/logger'
 import { VISUALS_STORAGE_BUCKET, VISUALS_SIGNED_URL_EXPIRY_SECONDS } from '@/lib/jobs/visualsStorage'
-import type { StudyVisualItem, StudyVisualSet } from '@/types/studyVisual'
+import type { StudyVisualItem, PublicVisualItem, PublicVisualSet } from '@/types/studyVisual'
 
 export async function GET(
   _req: Request,
@@ -34,53 +36,89 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    // ── Ownership check via authenticated client (RLS enforces user_id = auth.uid()) ──
-    const { data: row, error: readError } = await supabase
-      .from('study_visuals')
-      .select('id, document_id, user_id, visuals, model, created_at')
-      .eq('document_id', documentId)
-      .eq('user_id', user.id)
-      .maybeSingle()
+    // ── Ownership verification + public metadata (R8-H04) ────────────────────
+    // fn_get_owner_study_visuals (authenticated) verifies ownership via auth.uid()
+    // and returns only public-safe fields. storage_path and image_prompt are
+    // stripped at the database boundary — not reachable via Data API either.
+    const { data: publicData, error: readError } = await supabase.rpc(
+      'fn_get_owner_study_visuals',
+      { p_document_id: documentId },
+    )
 
     if (readError) {
       logger.error('visuals.signed_url.read_error', { error_code: 'READ_FAILED' })
       return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
     }
 
-    if (!row) {
+    if (!publicData) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
 
-    // ── Resolve signed URLs for generated items ───────────────────────────────
-    const serviceClient = createServiceClient()
-    const rawVisuals = (row.visuals ?? []) as StudyVisualItem[]
+    const publicRow = publicData as {
+      id:          string
+      document_id: string
+      visuals:     PublicVisualItem[]
+      model:       string
+      created_at:  string
+    }
 
-    const resolvedVisuals: StudyVisualItem[] = await Promise.all(
-      rawVisuals.map(async (item) => {
-        if (item.status !== 'generated' || !item.storage_path) {
-          return { ...item, image_url: null }
+    // ── Storage paths for URL signing (service_role only) ────────────────────
+    // fn_get_visuals_signing_manifest takes p_user_id explicitly because
+    // service_role bypasses RLS and auth.uid() is not available in that context.
+    const serviceClient = createServiceClient()
+    const { data: manifest, error: manifestError } = await serviceClient.rpc(
+      'fn_get_visuals_signing_manifest',
+      { p_document_id: documentId, p_user_id: user.id },
+    )
+
+    if (manifestError) {
+      logger.error('visuals.signed_url.manifest_error', { error_code: 'MANIFEST_FAILED' })
+      return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    }
+
+    // Raw visuals from the signing manifest (includes storage_path). May be null
+    // if no visuals row exists (concurrent delete between the two RPCs).
+    const rawVisuals = (manifest ?? []) as StudyVisualItem[]
+
+    // Expected storage path prefix: {userId}/{documentId}/
+    const expectedPrefix = `${user.id}/${documentId}/`
+
+    const resolvedVisuals: PublicVisualItem[] = await Promise.all(
+      publicRow.visuals.map(async (publicItem): Promise<PublicVisualItem> => {
+        // Correlate by database-validated immutable identifier, never array position.
+        const rawItem = rawVisuals.find(item => item.id === publicItem.id)
+
+        if (publicItem.status !== 'generated' || !rawItem?.storage_path) {
+          return { ...publicItem, image_url: null }
+        }
+
+        // Storage path prefix ownership check.
+        if (!rawItem.storage_path.startsWith(expectedPrefix)) {
+          logger.error('visuals.signed_url.invalid_path_prefix', {
+            error_code: 'INVALID_STORAGE_PATH_PREFIX',
+          })
+          return { ...publicItem, image_url: null }
         }
 
         const { data: signedData, error: signError } = await serviceClient.storage
           .from(VISUALS_STORAGE_BUCKET)
-          .createSignedUrl(item.storage_path, VISUALS_SIGNED_URL_EXPIRY_SECONDS)
+          .createSignedUrl(rawItem.storage_path, VISUALS_SIGNED_URL_EXPIRY_SECONDS)
 
         if (signError || !signedData?.signedUrl) {
           logger.warn('visuals.signed_url.sign_failed', { error_code: 'SIGN_FAILED' })
-          return { ...item, image_url: null }
+          return { ...publicItem, image_url: null }
         }
 
-        return { ...item, image_url: signedData.signedUrl }
+        return { ...publicItem, image_url: signedData.signedUrl }
       }),
     )
 
-    const result: StudyVisualSet = {
-      id:          row.id,
-      document_id: row.document_id,
-      user_id:     row.user_id,
+    const result: PublicVisualSet = {
+      id:          publicRow.id,
+      document_id: publicRow.document_id,
       visuals:     resolvedVisuals,
-      model:       row.model,
-      created_at:  row.created_at,
+      model:       publicRow.model,
+      created_at:  publicRow.created_at,
     }
 
     return NextResponse.json(result)

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "authority": "MoLis repository migration history; never Supabase service migration tables",
+  "generated_at": "2026-08-04",
+  "sole_authority": true,
+  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated through Round 16 corrections (R15-H01 pg_database_owner exact nspacl preflight; R15-H02 all LIKE ACL checks replaced with aclexplode exact comparisons; R15-H03 all KAV blocks freeze complete canonical text with verified SHA-256; R15-H04 full bounded PNG chunk parser with per-chunk CRC, IDAT required, IEND last/once, unknown critical chunk rejection, provider/download deadline composition via AbortSignal.any; R15-H05 typed transient_failure, terminal, supersession, stale CAS, failJob-throws recovery tests; R15-H06 portable jitter boundary, exact 10s/30s not-before/at-boundary, AbortSignal direct inspection tests).",
+  "execution_evidence": {
+    "database_execution_exists": false,
+    "storage_execution_exists": false,
+    "statement": "The corrective migration is locally authored and has not been executed in any database or Storage environment. auth.schema_migrations, realtime.schema_migrations, and storage.migrations are provider-owned and are not MoLis application migration evidence."
+  },
+  "fresh_project": {
+    "deterministic_from_repository_today": false,
+    "blocking_reason": "The canonical prerequisite active-product schema predating beta_foundation_v1.sql is not yet represented by a version-controlled MoLis migration. Fresh-project execution remains blocked until that prerequisite baseline is captured and reviewed."
+  },
+  "ordered_migrations": [
+    {
+      "order": 1,
+      "filename": "beta_foundation_v1.sql",
+      "sha256": "d2bc6e2cd63c243d8577b3b4785fb8638e13466472917cbd79203e3442fdb60b",
+      "status": "immutable_historical_baseline",
+      "execution_evidence": "Catalogue consistent with this file; exact historical execution unproven by a repository-owned application migration ledger. D11 read-only inspections confirmed the live schema shape matches what this file would produce.",
+      "mutable": false
+    },
+    {
+      "order": 2,
+      "filename": "20260729120001_generation_job_state_machine_schema.sql",
+      "sha256": "319099b1a60928bf3993cffbc9c5df5666700e9f6997fac683c8e2d5ce86f7b0",
+      "sha256_note": "Computed 2026-08-04 after Round 16 corrections (R15-H01–R15-H03 KAV completeness, pg_database_owner preflight, aclexplode ACL checks). Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "none",
+      "mutable": true,
+      "maintenance_contract": "When separately approved, apply after beta_foundation_v1.sql in one maintenance operation with enqueueing disabled until migration and verification complete. No execution is currently authorised."
+    }
+  ]
+}
