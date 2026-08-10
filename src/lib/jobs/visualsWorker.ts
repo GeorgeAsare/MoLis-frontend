@@ -58,7 +58,8 @@ function validatePngStructure(buf: Buffer): boolean {
   const validBitDepths: Record<number, readonly number[]> = {
     0: [1, 2, 4, 8, 16],  // Grayscale
     2: [8, 16],            // RGB
-    3: [1, 2, 4, 8],       // Indexed-colour
+    // Color type 3 (indexed) requires a PLTE critical chunk; the parser rejects unknown
+    // critical chunks, so indexed-colour cannot pass validation. MoLis only generates RGBA.
     4: [8, 16],            // Grayscale + Alpha
     6: [8, 16],            // RGBA
   }
@@ -295,113 +296,131 @@ async function generateAndStoreImage(
 
   // R15-H04: Compose job cancellation signal with a bounded provider deadline.
   // AbortSignal.any() aborts as soon as any constituent signal fires (Node ≥ 20).
-  const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(PROVIDER_IMAGE_TIMEOUT_MS)])
+  // Explicit controller + clearTimeout so the timer resource is freed when the function returns.
+  const providerTimeoutController = new AbortController()
+  const providerTimer = setTimeout(
+    () => providerTimeoutController.abort(new DOMException('Provider image deadline', 'TimeoutError')),
+    PROVIDER_IMAGE_TIMEOUT_MS,
+  )
+  const providerSignal = AbortSignal.any([signal, providerTimeoutController.signal])
 
-  let imageBuffer: Buffer
   try {
-    // Pass composed signal to SDK so a job cancellation or timeout aborts the network call.
-    const response = await openai.images.generate({
-      model:  imageModel,
-      prompt: item.image_prompt,
-      size:   '1024x1024',
-      n:      1,
-    }, { signal: providerSignal })
+    let imageBuffer: Buffer
+    try {
+      // Pass composed signal to SDK so a job cancellation or timeout aborts the network call.
+      const response = await openai.images.generate({
+        model:  imageModel,
+        prompt: item.image_prompt,
+        size:   '1024x1024',
+        n:      1,
+      }, { signal: providerSignal })
 
-    signal.throwIfAborted()
+      providerSignal.throwIfAborted()
 
-    const image = response.data?.[0]
-    if (image?.b64_json) {
-      imageBuffer = Buffer.from(image.b64_json, 'base64')
-    } else if (image?.url) {
-      // R15-H04: Compose download signal with its own shorter deadline.
-      const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)])
-      // R12-H04: redirect:'error' — provider URLs must be direct; no redirect chains accepted.
-      const fetched = await fetch(image.url, { signal: downloadSignal, redirect: 'error' })
-      if (!fetched.ok) throw new Error(`Image download failed (HTTP ${fetched.status})`)
+      const image = response.data?.[0]
+      if (image?.b64_json) {
+        imageBuffer = Buffer.from(image.b64_json, 'base64')
+      } else if (image?.url) {
+        // R15-H04: Compose download signal with its own shorter deadline.
+        // Explicit controller + clearTimeout frees the timer when streaming completes or fails.
+        const downloadTimeoutController = new AbortController()
+        const downloadTimer = setTimeout(
+          () => downloadTimeoutController.abort(new DOMException('Download deadline', 'TimeoutError')),
+          DOWNLOAD_TIMEOUT_MS,
+        )
+        const downloadSignal = AbortSignal.any([signal, downloadTimeoutController.signal])
+        try {
+          // R12-H04: redirect:'error' — provider URLs must be direct; no redirect chains accepted.
+          const fetched = await fetch(image.url, { signal: downloadSignal, redirect: 'error' })
+          if (!fetched.ok) throw new Error(`Image download failed (HTTP ${fetched.status})`)
 
-      // R14-H04: Exact media-type check — parse the header, strip parameters,
-      // and require case-insensitive exact 'image/png'. Prefix matching accepts
-      // 'image/png-malicious'; exact matching does not.
-      const mediaType = (fetched.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
-      if (mediaType !== 'image/png') {
-        logger.error('worker.visuals.invalid_content_type', {
-          error_code: 'STORAGE_UPLOAD_FAILED',
-        })
-        return {
-          ...item,
-          storage_path: null, image_url: null, status: 'failed',
-          mime_type: null, error: 'STORAGE_UPLOAD_FAILED', failure_stage: 'storage_upload',
-        }
-      }
-
-      // R11-C06: Content-length early reject — avoids reading an oversized response.
-      const cl = fetched.headers.get('content-length')
-      if (cl !== null && parseInt(cl, 10) > MAX_IMAGE_BYTES) {
-        logger.error('worker.visuals.image_oversized_early', { error_code: 'STORAGE_UPLOAD_FAILED' })
-        return {
-          ...item,
-          storage_path:  null,
-          image_url:     null,
-          status:        'failed',
-          mime_type:     null,
-          error:         'STORAGE_UPLOAD_FAILED',
-          failure_stage: 'storage_upload',
-        }
-      }
-
-      // R12-H04: Streaming 5 MiB cap — byte-counting reader prevents memory exhaustion
-      // when a server omits content-length or lies about the response size.
-      // R15-H04: Cancel the reader when downloadSignal fires so it does not remain pending.
-      const reader = fetched.body!.getReader()
-      const onAbort = () => { void reader.cancel() }
-      downloadSignal.addEventListener('abort', onAbort, { once: true })
-      const chunks: Uint8Array[] = []
-      let totalBytes = 0
-      let oversized = false
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          totalBytes += value.byteLength
-          if (totalBytes > MAX_IMAGE_BYTES) {
-            void reader.cancel()
-            oversized = true
-            break
+          // R14-H04: Exact media-type check — parse the header, strip parameters,
+          // and require case-insensitive exact 'image/png'. Prefix matching accepts
+          // 'image/png-malicious'; exact matching does not.
+          const mediaType = (fetched.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+          if (mediaType !== 'image/png') {
+            logger.error('worker.visuals.invalid_content_type', {
+              error_code: 'STORAGE_UPLOAD_FAILED',
+            })
+            return {
+              ...item,
+              storage_path: null, image_url: null, status: 'failed',
+              mime_type: null, error: 'STORAGE_UPLOAD_FAILED', failure_stage: 'storage_upload',
+            }
           }
-          chunks.push(value)
+
+          // R11-C06: Content-length early reject — avoids reading an oversized response.
+          const cl = fetched.headers.get('content-length')
+          if (cl !== null && parseInt(cl, 10) > MAX_IMAGE_BYTES) {
+            logger.error('worker.visuals.image_oversized_early', { error_code: 'STORAGE_UPLOAD_FAILED' })
+            return {
+              ...item,
+              storage_path:  null,
+              image_url:     null,
+              status:        'failed',
+              mime_type:     null,
+              error:         'STORAGE_UPLOAD_FAILED',
+              failure_stage: 'storage_upload',
+            }
+          }
+
+          // R12-H04: Streaming 5 MiB cap — byte-counting reader prevents memory exhaustion
+          // when a server omits content-length or lies about the response size.
+          // R15-H04: Cancel the reader when downloadSignal fires so it does not remain pending.
+          const reader = fetched.body!.getReader()
+          const onAbort = () => { void reader.cancel() }
+          downloadSignal.addEventListener('abort', onAbort, { once: true })
+          const chunks: Uint8Array[] = []
+          let totalBytes = 0
+          let oversized = false
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              totalBytes += value.byteLength
+              if (totalBytes > MAX_IMAGE_BYTES) {
+                void reader.cancel()
+                oversized = true
+                break
+              }
+              chunks.push(value)
+            }
+          } finally {
+            downloadSignal.removeEventListener('abort', onAbort)
+          }
+          if (oversized) {
+            logger.error('worker.visuals.image_oversized_stream', { error_code: 'STORAGE_UPLOAD_FAILED' })
+            return {
+              ...item,
+              storage_path:  null,
+              image_url:     null,
+              status:        'failed',
+              mime_type:     null,
+              error:         'STORAGE_UPLOAD_FAILED',
+              failure_stage: 'storage_upload',
+            }
+          }
+          imageBuffer = Buffer.concat(chunks)
+          downloadSignal.throwIfAborted()
+        } finally {
+          clearTimeout(downloadTimer)
         }
-      } finally {
-        downloadSignal.removeEventListener('abort', onAbort)
+      } else {
+        throw new Error('Image model returned no usable data')
       }
-      if (oversized) {
-        logger.error('worker.visuals.image_oversized_stream', { error_code: 'STORAGE_UPLOAD_FAILED' })
-        return {
-          ...item,
-          storage_path:  null,
-          image_url:     null,
-          status:        'failed',
-          mime_type:     null,
-          error:         'STORAGE_UPLOAD_FAILED',
-          failure_stage: 'storage_upload',
-        }
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err
+      logger.error('worker.visuals.image_generation_failed', { error_code: 'IMAGE_GENERATION_FAILED' })
+      return {
+        ...item,
+        storage_path:  null,
+        image_url:     null,
+        status:        'failed',
+        mime_type:     null,
+        error:         'IMAGE_GENERATION_FAILED',
+        failure_stage: 'image_generation',
       }
-      imageBuffer = Buffer.concat(chunks)
-    } else {
-      throw new Error('Image model returned no usable data')
     }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') throw err
-    logger.error('worker.visuals.image_generation_failed', { error_code: 'IMAGE_GENERATION_FAILED' })
-    return {
-      ...item,
-      storage_path:  null,
-      image_url:     null,
-      status:        'failed',
-      mime_type:     null,
-      error:         'IMAGE_GENERATION_FAILED',
-      failure_stage: 'image_generation',
-    }
-  }
 
   // R10-H06: Reject oversized provider responses before upload.
   // Guards against provider bugs and aligns with the storage.buckets file_size_limit.
@@ -438,38 +457,50 @@ async function generateAndStoreImage(
     }
   }
 
-  signal.throwIfAborted()
+    providerSignal.throwIfAborted()
 
-  try {
-    const serviceClient = createServiceClient()
-    const { error: uploadError } = await serviceClient.storage
-      .from(VISUALS_STORAGE_BUCKET)
-      .upload(storagePath, imageBuffer, {
-        contentType: 'image/png',
-        upsert:      false,
-      })
+    try {
+      // Supabase Storage JS client does not natively accept an AbortSignal on upload().
+      // The post-upload providerSignal check below enforces the zero-publication guarantee
+      // when the composed deadline expires while the upload is in-flight.
+      const serviceClient = createServiceClient()
+      const { error: uploadError } = await serviceClient.storage
+        .from(VISUALS_STORAGE_BUCKET)
+        .upload(storagePath, imageBuffer, {
+          contentType: 'image/png',
+          upsert:      false,
+        })
 
-    if (uploadError) throw new Error('Storage upload failed')
+      if (uploadError) throw new Error('Storage upload failed')
 
-    logger.info('worker.visuals.image_staged', { stored: true })
-    return {
-      ...item,
-      storage_path: storagePath,
-      image_url: null,
-      mime_type: 'image/png',
-      status: 'generated',
+      // Post-upload deadline check: if the composed deadline fired during upload,
+      // treat the uploaded object as a private lost-race artifact and do not publish.
+      // The route will not receive status:'generated' and will not call completeAndPublishJob.
+      providerSignal.throwIfAborted()
+
+      logger.info('worker.visuals.image_staged', { stored: true })
+      return {
+        ...item,
+        storage_path: storagePath,
+        image_url: null,
+        mime_type: 'image/png',
+        status: 'generated',
+      }
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err
+      logger.error('worker.visuals.storage_upload_failed', { error_code: 'STORAGE_UPLOAD_FAILED' })
+      return {
+        ...item,
+        storage_path:  null,
+        image_url:     null,
+        status:        'failed',
+        mime_type:     null,
+        error:         'STORAGE_UPLOAD_FAILED',
+        failure_stage: 'storage_upload',
+      }
     }
-  } catch {
-    logger.error('worker.visuals.storage_upload_failed', { error_code: 'STORAGE_UPLOAD_FAILED' })
-    return {
-      ...item,
-      storage_path:  null,
-      image_url:     null,
-      status:        'failed',
-      mime_type:     null,
-      error:         'STORAGE_UPLOAD_FAILED',
-      failure_stage: 'storage_upload',
-    }
+  } finally {
+    clearTimeout(providerTimer)
   }
 }
 
@@ -500,7 +531,13 @@ async function resolvePromptsFromSnapshot(
     : buildPromptFromText(snapshotTitle, snapshotText)
 
   // R15-H04: Compose job cancellation signal with a bounded text-completion deadline.
-  const textSignal = AbortSignal.any([signal, AbortSignal.timeout(PROVIDER_TEXT_TIMEOUT_MS)])
+  // Explicit controller + clearTimeout so the timer resource is freed when the call completes.
+  const textTimeoutController = new AbortController()
+  const textTimer = setTimeout(
+    () => textTimeoutController.abort(new DOMException('Text provider deadline', 'TimeoutError')),
+    PROVIDER_TEXT_TIMEOUT_MS,
+  )
+  const textSignal = AbortSignal.any([signal, textTimeoutController.signal])
 
   let rawContent: string
   try {
@@ -518,16 +555,18 @@ async function resolvePromptsFromSnapshot(
     rawContent = completion.choices[0]?.message?.content ?? ''
     if (!rawContent) throw new Error('Empty response')
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') throw err
+    if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) throw err
     const msg = err instanceof Error ? err.message : ''
     if (msg.includes('429') || msg.includes('quota'))
       throw new Error('OpenAI rate limit reached. Please wait a moment and try again.')
     if (msg.includes('401') || msg.includes('Incorrect API key'))
       throw new Error('Invalid OpenAI API key. Check OPENAI_API_KEY in .env.local.')
     throw new Error('Visual topic detection failed. Please try again.')
+  } finally {
+    clearTimeout(textTimer)
   }
 
-  signal.throwIfAborted()
+  textSignal.throwIfAborted()
 
   let parsed: Record<string, unknown>
   try {
@@ -640,6 +679,10 @@ export async function stageVisualsForJob(
     const result = await generateAndStoreImage(openai, storagePath, prompts[i], imageModel, signal)
     generated.push(result)
   }
+
+  // Pre-return signal check: prevents the route from calling completeAndPublishJob
+  // if the caller's job signal was aborted while staging was in progress.
+  signal.throwIfAborted()
 
   return { items: generated, model }
 }

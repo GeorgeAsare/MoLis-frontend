@@ -16,6 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import zlib from 'node:zlib'
 
 // ── server-only mock (must be hoisted before visualsWorker import) ────────────
 vi.mock('server-only', () => ({}))
@@ -86,11 +87,12 @@ function pngCrc32(buf: Buffer): number {
   return (crc ^ 0xFFFFFFFF) >>> 0
 }
 
-// Build a structurally valid minimal PNG that satisfies the bounded chunk parser:
-//   8 sig + 25 IHDR + 12+extraBodyBytes IDAT + 12 IEND = base 57 bytes when extraBodyBytes=0.
-// R15-H04: IDAT is now required by the production validator; extraBodyBytes fills the IDAT
-// data field so size-boundary tests keep the same total-size formula (base + extraBodyBytes).
-// The image is declared as 1x1 RGBA 8-bit — valid bit-depth/color-type combination.
+// Build a structurally and content-valid minimal PNG satisfying the bounded chunk parser.
+// IDAT uses real zlib-compressed pixel data for a 1×1 RGBA image (filter byte 0x00 + R=0,G=0,B=0,A=255).
+// makePngBuffer(0) is the canonical valid fixture for positive tests (status:'generated').
+// extraBodyBytes appends raw bytes AFTER the zlib stream inside IDAT; the resulting IDAT
+// is CRC-valid but its payload is not decodable — use it ONLY for negative tests (oversize
+// rejection, abort tests) where the image is never validated for content.
 function makePngBuffer(extraBodyBytes = 0): Buffer {
   const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -108,12 +110,13 @@ function makePngBuffer(extraBodyBytes = 0): Buffer {
   ihdrCrc.writeUInt32BE(pngCrc32(Buffer.concat([ihdrType, ihdrData])))
   const ihdr = Buffer.concat([ihdrLen, ihdrType, ihdrData, ihdrCrc])
 
-  // IDAT chunk: extraBodyBytes bytes of zeros as data; CRC is computed over type + data.
-  // The production validator checks only chunk structure and CRC, not IDAT decompressibility.
+  // IDAT: real zlib-compressed scanline. PNG IDAT uses zlib wrapper format (RFC 1950).
   const idatType = Buffer.from('IDAT')
-  const idatData = Buffer.alloc(extraBodyBytes, 0)
+  const rawPixels = Buffer.from([0x00, 0x00, 0x00, 0x00, 0xFF])  // filter=None, R=0,G=0,B=0,A=255
+  const compressed = zlib.deflateSync(rawPixels)
+  const idatData = extraBodyBytes > 0 ? Buffer.concat([compressed, Buffer.alloc(extraBodyBytes, 0)]) : compressed
   const idatLen  = Buffer.alloc(4)
-  idatLen.writeUInt32BE(extraBodyBytes)
+  idatLen.writeUInt32BE(idatData.byteLength)
   const idatCrc = Buffer.alloc(4)
   idatCrc.writeUInt32BE(pngCrc32(Buffer.concat([idatType, idatData])))
   const idat = Buffer.concat([idatLen, idatType, idatData, idatCrc])
@@ -123,8 +126,51 @@ function makePngBuffer(extraBodyBytes = 0): Buffer {
   return Buffer.concat([sig, ihdr, idat, iend])
 }
 
-// PNG_BASE_SIZE is the overhead bytes of makePngBuffer(0) = 8 sig + 25 IHDR + 12 IDAT(0) + 12 IEND
-const PNG_BASE_SIZE = 57
+// PNG_BASE_SIZE: actual byte size of makePngBuffer(0); computed dynamically so it reflects
+// the real compressed IDAT payload rather than a hardcoded constant.
+const PNG_BASE_SIZE = makePngBuffer(0).length
+
+// Build a content-valid PNG by inserting a valid tEXt ancillary chunk of exactly `dataBytes` bytes.
+// PNG tEXt data field structure per spec: keyword (1–79 Latin-1 bytes, no NUL) + NUL (0x00) + text.
+// This implementation uses a 1-byte keyword 'x' + NUL separator + (dataBytes − 2) bytes of filler.
+// Requires dataBytes >= 2.
+// Total size = PNG_BASE_SIZE + 12 + dataBytes (12 = 4-len + 4-type + 4-CRC overhead).
+// Use this for positive size-boundary tests instead of appending padding to IDAT.
+function makePngBufferWithAncillaryChunk(dataBytes: number): Buffer {
+  const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+  const ihdrType = Buffer.from('IHDR')
+  const ihdrData = Buffer.from([0x00,0x00,0x00,0x01, 0x00,0x00,0x00,0x01, 0x08, 0x06, 0x00,0x00,0x00])
+  const ihdrLen = Buffer.alloc(4); ihdrLen.writeUInt32BE(13)
+  const ihdrCrc = Buffer.alloc(4); ihdrCrc.writeUInt32BE(pngCrc32(Buffer.concat([ihdrType, ihdrData])))
+  const ihdr = Buffer.concat([ihdrLen, ihdrType, ihdrData, ihdrCrc])
+
+  const idatType = Buffer.from('IDAT')
+  const rawPixels = Buffer.from([0x00, 0x00, 0x00, 0x00, 0xFF])
+  const compressed = zlib.deflateSync(rawPixels)
+  const idatLen = Buffer.alloc(4); idatLen.writeUInt32BE(compressed.byteLength)
+  const idatCrc = Buffer.alloc(4); idatCrc.writeUInt32BE(pngCrc32(Buffer.concat([idatType, compressed])))
+  const idat = Buffer.concat([idatLen, idatType, compressed, idatCrc])
+
+  // Valid tEXt data: 1-byte keyword 'x' (0x78) + NUL separator + text filler.
+  const textType = Buffer.from('tEXt')
+  const textData = Buffer.concat([
+    Buffer.from([0x78]),                    // keyword: 'x' (1 byte, no NUL)
+    Buffer.from([0x00]),                    // NUL separator (required by PNG tEXt spec)
+    Buffer.alloc(dataBytes - 2, 0x41),      // text filler: 'A' × (dataBytes − 2)
+  ])
+  const textLen = Buffer.alloc(4); textLen.writeUInt32BE(dataBytes)
+  const textCrc = Buffer.alloc(4); textCrc.writeUInt32BE(pngCrc32(Buffer.concat([textType, textData])))
+  const textChunk = Buffer.concat([textLen, textType, textData, textCrc])
+
+  const iend = Buffer.from([0x00,0x00,0x00,0x00, 0x49,0x45,0x4E,0x44, 0xAE,0x42,0x60,0x82])
+
+  return Buffer.concat([sig, ihdr, idat, textChunk, iend])
+}
+
+// Per-chunk overhead: 4 (length field) + 4 (type field) + 4 (CRC field) bytes beyond the data field.
+// tEXt chunks require dataBytes >= 2 (1-byte keyword + 1-byte NUL separator minimum).
+const ANCILLARY_CHUNK_OVERHEAD = 12
 
 function makeContext(overrides: Record<string, unknown> = {}) {
   return {
@@ -240,9 +286,11 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
   })
 
   it('accepts an image exactly at 5 MiB − 1 byte (boundary below limit)', async () => {
-    // makePngBuffer base = PNG_BASE_SIZE (57) bytes. Total = 57 + extraBodyBytes.
-    // Target: MAX_IMAGE_BYTES − 1, so extraBodyBytes = MAX_IMAGE_BYTES − 1 − PNG_BASE_SIZE.
-    const atLimit = makePngBuffer(MAX_IMAGE_BYTES - 1 - PNG_BASE_SIZE)
+    // Use a content-valid PNG with a tEXt ancillary chunk padded to exactly MAX_IMAGE_BYTES − 1 bytes.
+    // Total = PNG_BASE_SIZE + ANCILLARY_CHUNK_OVERHEAD + dataBytes; solve for dataBytes.
+    const dataBytes = MAX_IMAGE_BYTES - 1 - PNG_BASE_SIZE - ANCILLARY_CHUNK_OVERHEAD
+    const atLimit = makePngBufferWithAncillaryChunk(dataBytes)
+    expect(atLimit.byteLength).toBe(MAX_IMAGE_BYTES - 1)  // self-check: exact target size
     const b64 = atLimit.toString('base64')
     mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: b64 }] })
 
@@ -288,7 +336,7 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
   // ── Upload content-type enforcement ──────────────────────────────────────
 
   it('uploads with contentType image/png (not any other MIME type)', async () => {
-    const validPng = makePngBuffer(100)
+    const validPng = makePngBuffer(0)
     mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: validPng.toString('base64') }] })
 
     const signal = new AbortController().signal
@@ -303,7 +351,7 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
   // ── Storage path format ───────────────────────────────────────────────────
 
   it('uses the exact path format {userId}/{documentId}/{jobId}/{attemptCount}/{uuid}.png', async () => {
-    const validPng = makePngBuffer(100)
+    const validPng = makePngBuffer(0)
     mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: validPng.toString('base64') }] })
 
     const signal = new AbortController().signal
@@ -323,7 +371,7 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
   // ── Upload failure → sanitized error shape ────────────────────────────────
 
   it('returns STORAGE_UPLOAD_FAILED with sanitized shape when upload throws', async () => {
-    const validPng = makePngBuffer(100)
+    const validPng = makePngBuffer(0)
     mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: validPng.toString('base64') }] })
     mockUpload.mockResolvedValue({ error: new Error('Storage quota exceeded') })
 
@@ -413,7 +461,7 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
     }
 
     it('succeeds when URL response is a valid PNG with correct Content-Type', async () => {
-      vi.stubGlobal('fetch', makeFetchMock({ chunks: pngChunks(100) }))
+      vi.stubGlobal('fetch', makeFetchMock({ chunks: pngChunks(0) }))
       const signal = new AbortController().signal
       const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
       expect(result.items[0].status).toBe('generated')
@@ -423,7 +471,7 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
     })
 
     it('passes redirect:error option to fetch so redirect chains are blocked', async () => {
-      vi.stubGlobal('fetch', makeFetchMock({ chunks: pngChunks(100) }))
+      vi.stubGlobal('fetch', makeFetchMock({ chunks: pngChunks(0) }))
       const signal = new AbortController().signal
       await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
       const fetchMock = global.fetch as ReturnType<typeof vi.fn>
@@ -456,14 +504,14 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
 
     it('accepts Content-Type image/png with a charset parameter', async () => {
       // Parameters after ';' are stripped; the media type 'image/png' remains valid.
-      vi.stubGlobal('fetch', makeFetchMock({ contentType: 'image/png; charset=utf-8', chunks: pngChunks(100) }))
+      vi.stubGlobal('fetch', makeFetchMock({ contentType: 'image/png; charset=utf-8', chunks: pngChunks(0) }))
       const signal = new AbortController().signal
       const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
       expect(result.items[0].status).toBe('generated')
     })
 
     it('accepts Content-Type IMAGE/PNG (case-insensitive)', async () => {
-      vi.stubGlobal('fetch', makeFetchMock({ contentType: 'IMAGE/PNG', chunks: pngChunks(100) }))
+      vi.stubGlobal('fetch', makeFetchMock({ contentType: 'IMAGE/PNG', chunks: pngChunks(0) }))
       const signal = new AbortController().signal
       const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
       expect(result.items[0].status).toBe('generated')
@@ -573,6 +621,459 @@ describe('visualsWorker — Storage boundary semantics (Group A)', () => {
       const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
       expect(mockUpload).not.toHaveBeenCalled()
       expect(result.items[0].error).toBe('STORAGE_UPLOAD_FAILED')
+    })
+  })
+
+  // ── R17-M02: Additional negative PNG structural tests (b64_json branch) ──────
+
+  it('rejects a buffer with a corrupt IDAT CRC', async () => {
+    const good = makePngBuffer(0)
+    const bad  = Buffer.from(good)
+    // IDAT starts at byte 33 (8 sig + 4+4+13+4 IHDR)
+    const idatStart    = 33
+    const idatDataLen  = good.readUInt32BE(idatStart)
+    const idatCrcOff   = idatStart + 4 + 4 + idatDataLen
+    bad[idatCrcOff] ^= 0xFF
+    mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: bad.toString('base64') }] })
+    const signal = new AbortController().signal
+    const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+    expect(mockUpload).not.toHaveBeenCalled()
+    expect(result.items[0].error).toBe('STORAGE_UPLOAD_FAILED')
+  })
+
+  it('rejects a buffer that has no IDAT chunk (IHDR followed directly by IEND)', async () => {
+    const good        = makePngBuffer(0)
+    const idatStart   = 33
+    const idatDataLen = good.readUInt32BE(idatStart)
+    const idatChunkSz = 4 + 4 + idatDataLen + 4
+    const noIdat = Buffer.concat([good.subarray(0, idatStart), good.subarray(idatStart + idatChunkSz)])
+    mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: noIdat.toString('base64') }] })
+    const signal = new AbortController().signal
+    const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+    expect(mockUpload).not.toHaveBeenCalled()
+    expect(result.items[0].error).toBe('STORAGE_UPLOAD_FAILED')
+  })
+
+  it('rejects a buffer with trailing bytes after the IEND chunk', async () => {
+    const withTrailing = Buffer.concat([makePngBuffer(0), Buffer.from([0x00, 0x00])])
+    mockImagesGenerate.mockResolvedValue({ data: [{ b64_json: withTrailing.toString('base64') }] })
+    const signal = new AbortController().signal
+    const result = await stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+    expect(mockUpload).not.toHaveBeenCalled()
+    expect(result.items[0].error).toBe('STORAGE_UPLOAD_FAILED')
+  })
+
+  // ── R17-H02: Deadline / abort — zero-upload guarantees ───────────────────────
+
+  describe('Deadline / abort — zero-upload guarantees (R17-H02)', () => {
+    it('does not upload and re-throws when TimeoutError is thrown during image generation', async () => {
+      const timeoutErr = Object.assign(new Error('signal timed out'), { name: 'TimeoutError' })
+      mockImagesGenerate.mockRejectedValue(timeoutErr)
+      const signal = new AbortController().signal
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      ).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+
+    it('does not upload and re-throws when TimeoutError is thrown during text completion', async () => {
+      const timeoutErr = Object.assign(new Error('signal timed out'), { name: 'TimeoutError' })
+      mockChatCreate.mockRejectedValue(timeoutErr)
+      const signal = new AbortController().signal
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      ).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+
+    it('does not upload and re-throws when AbortError is thrown during image generation', async () => {
+      const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' })
+      mockImagesGenerate.mockRejectedValue(abortErr)
+      const signal = new AbortController().signal
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+
+    it('does not upload and re-throws when AbortError is thrown during text completion', async () => {
+      const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' })
+      mockChatCreate.mockRejectedValue(abortErr)
+      const signal = new AbortController().signal
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+
+    it('does not upload when the job signal is aborted after image generation returns', async () => {
+      const validPng   = makePngBuffer(0)
+      const controller = new AbortController()
+      mockImagesGenerate.mockImplementation(async () => {
+        controller.abort()
+        return { data: [{ b64_json: validPng.toString('base64') }] }
+      })
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, controller.signal)
+      ).rejects.toThrow()
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+
+    it('does not upload when the job signal is aborted after text completion returns', async () => {
+      const controller = new AbortController()
+      mockChatCreate.mockImplementation(async () => {
+        controller.abort()
+        return {
+          choices: [{ message: { content: JSON.stringify({ visuals: [{ topic: 'T', description: 'D', visual_type: 'diagram', image_prompt: 'P' }] }) } }],
+        }
+      })
+      await expect(
+        stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, controller.signal)
+      ).rejects.toThrow()
+      expect(mockUpload).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── PNG fixture self-validation (R17-PATCH) ───────────────────────────────────
+
+  describe('PNG fixture self-validation', () => {
+    it('makePngBuffer(0) is a decodable content-valid 1×1 RGBA PNG: all CRCs correct, IDAT inflates to expected scanline', () => {
+      const png = makePngBuffer(0)
+
+      // Parse every chunk and verify CRCs.
+      let offset = 8
+      let foundIHDR = false, foundIDAT = false, foundIEND = false
+      let ihdrWidth = 0, ihdrHeight = 0, ihdrBitDepth = 0, ihdrColorType = 0
+      const idatData: Buffer[] = []
+
+      while (offset < png.length) {
+        const chunkLength = png.readUInt32BE(offset)
+        const typeOffset  = offset + 4
+        const dataOffset  = offset + 8
+        const crcOffset   = dataOffset + chunkLength
+
+        // Every chunk CRC must be valid.
+        expect(pngCrc32(png.subarray(typeOffset, crcOffset))).toBe(png.readUInt32BE(crcOffset))
+
+        const chunkType = png.toString('ascii', typeOffset, typeOffset + 4)
+        if (chunkType === 'IHDR') {
+          foundIHDR  = true
+          expect(chunkLength).toBe(13)
+          ihdrWidth     = png.readUInt32BE(dataOffset)
+          ihdrHeight    = png.readUInt32BE(dataOffset + 4)
+          ihdrBitDepth  = png[dataOffset + 8]
+          ihdrColorType = png[dataOffset + 9]
+          expect(ihdrWidth).toBe(1)
+          expect(ihdrHeight).toBe(1)
+          expect(ihdrBitDepth).toBe(8)
+          expect(ihdrColorType).toBe(6)  // RGBA
+        } else if (chunkType === 'IDAT') {
+          foundIDAT = true
+          idatData.push(png.subarray(dataOffset, crcOffset))
+        } else if (chunkType === 'IEND') {
+          foundIEND = true
+          expect(chunkLength).toBe(0)
+        }
+        offset = crcOffset + 4
+      }
+
+      expect(foundIHDR).toBe(true)
+      expect(foundIDAT).toBe(true)
+      expect(foundIEND).toBe(true)
+
+      // Inflate the concatenated IDAT payload.
+      const decompressed = zlib.inflateSync(Buffer.concat(idatData))
+      // 1×1 RGBA: 1 row × (1 filter byte + 1 pixel × 4 channels) = 5 bytes.
+      const bytesPerPixel = ihdrColorType === 6 ? 4 : 1
+      const expectedBytes = ihdrHeight * (1 + ihdrWidth * bytesPerPixel)
+      expect(decompressed.length).toBe(expectedBytes)
+      expect(decompressed[0]).toBe(0x00)  // filter = None
+      expect(decompressed[1]).toBe(0x00)  // R
+      expect(decompressed[2]).toBe(0x00)  // G
+      expect(decompressed[3]).toBe(0x00)  // B
+      expect(decompressed[4]).toBe(0xFF)  // A = 255
+    })
+
+    it('makePngBufferWithAncillaryChunk: correct total size, valid signature, all CRCs, IHDR first/once, tEXt valid keyword+NUL, IEND once/last/zero-length/no-trailing, IDAT decodable', () => {
+      const dataBytes = 100
+      const png = makePngBufferWithAncillaryChunk(dataBytes)
+
+      expect(png.byteLength).toBe(PNG_BASE_SIZE + ANCILLARY_CHUNK_OVERHEAD + dataBytes)
+
+      // PNG signature must be the canonical 8-byte sequence.
+      expect(png.subarray(0, 8).equals(
+        Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+      )).toBe(true)
+
+      let offset = 8
+      let ihdrCount = 0, iendCount = 0, foundTEXT = false, foundIDAT = false
+      let firstChunkType = '', lastChunkType = ''
+      let textPayloadOffset = -1, textPayloadLength = -1
+      const idatData: Buffer[] = []
+
+      while (offset < png.length) {
+        const chunkLength = png.readUInt32BE(offset)
+        const typeOffset  = offset + 4
+        const dataOffset  = offset + 8
+        const crcOffset   = dataOffset + chunkLength
+
+        // Every chunk boundary must lie within the buffer.
+        expect(crcOffset + 4).toBeLessThanOrEqual(png.length)
+        // Every chunk CRC must be valid.
+        expect(pngCrc32(png.subarray(typeOffset, crcOffset))).toBe(png.readUInt32BE(crcOffset))
+
+        const chunkType = png.toString('ascii', typeOffset, typeOffset + 4)
+        if (!firstChunkType) firstChunkType = chunkType
+        lastChunkType = chunkType
+
+        if (chunkType === 'IHDR') {
+          ihdrCount++
+        } else if (chunkType === 'tEXt') {
+          foundTEXT = true
+          expect(chunkLength).toBe(dataBytes)
+          textPayloadOffset = dataOffset
+          textPayloadLength = chunkLength
+        } else if (chunkType === 'IDAT') {
+          foundIDAT = true
+          idatData.push(png.subarray(dataOffset, crcOffset))
+        } else if (chunkType === 'IEND') {
+          iendCount++
+          expect(chunkLength).toBe(0)   // IEND carries no data
+        }
+        offset = crcOffset + 4
+      }
+
+      // IHDR must be the first chunk and appear exactly once.
+      expect(firstChunkType).toBe('IHDR')
+      expect(ihdrCount).toBe(1)
+
+      expect(foundIDAT).toBe(true)
+      expect(foundTEXT).toBe(true)
+
+      // IEND must appear exactly once, be the final chunk, and be followed by no trailing bytes.
+      expect(iendCount).toBe(1)
+      expect(lastChunkType).toBe('IEND')
+      expect(offset).toBe(png.length)   // parser offset === buffer length: no trailing bytes
+
+      // tEXt chunk data must contain a valid keyword (1–79 bytes, no NUL) + NUL separator + text.
+      const textPayload = png.subarray(textPayloadOffset, textPayloadOffset + textPayloadLength)
+      const nulIdx = textPayload.indexOf(0x00)
+      expect(nulIdx).toBeGreaterThanOrEqual(1)   // keyword at least 1 byte before NUL
+      expect(nulIdx).toBeLessThanOrEqual(79)     // keyword at most 79 bytes before NUL
+      expect(textPayload[nulIdx]).toBe(0x00)     // NUL separator byte is 0x00
+
+      // IDAT payload must inflate successfully — the ancillary chunk must not affect image data.
+      const decompressed = zlib.inflateSync(Buffer.concat(idatData))
+      expect(decompressed.length).toBe(5)   // 1×1 RGBA: 1 filter byte + 4 channel bytes
+      expect(decompressed[0]).toBe(0x00)    // filter = None
+      expect(decompressed[4]).toBe(0xFF)    // A = 255
+    })
+  })
+
+  // ── Real composed deadline tests — fake timers (R17-PATCH) ───────────────────
+
+  describe('Real composed deadline tests — fake timers (R17-PATCH)', () => {
+    // Must match the private constants in visualsWorker.ts exactly.
+    const PROVIDER_IMAGE_TIMEOUT_MS = 120_000
+    const PROVIDER_TEXT_TIMEOUT_MS  =  60_000
+
+    const ONE_VISUAL = JSON.stringify({
+      visuals: [{ topic: 'T', description: 'D', visual_type: 'diagram', image_prompt: 'P' }],
+    })
+
+    beforeEach(() => {
+      vi.clearAllMocks()
+      process.env.OPENAI_API_KEY = 'sk-test-key'
+      mockRpc.mockResolvedValue({ data: makeContext(), error: null })
+      mockUpload.mockResolvedValue({ error: null })
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      delete process.env.OPENAI_API_KEY
+    })
+
+    it('provider image deadline: real composed providerSignal aborts when timeout fires; upload never occurs', async () => {
+      vi.useFakeTimers()
+
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: ONE_VISUAL } }] })
+
+      // Image generation hangs and listens on the real providerSignal passed by the worker.
+      let capturedProviderSignal: AbortSignal | undefined
+      mockImagesGenerate.mockImplementation((_body: unknown, opts: { signal?: AbortSignal }) => {
+        capturedProviderSignal = opts?.signal
+        const p = new Promise<never>((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(opts.signal!.reason), { once: true })
+        })
+        // Prevent transient unhandledRejection: the abort fires synchronously inside the fake-timer
+        // callback before the worker's microtask-based catch handler runs. Adding .catch(()=>{})
+        // marks the promise as handled immediately, so Node.js does not report it as unhandled.
+        p.catch(() => {})
+        return p
+      })
+
+      const signal = new AbortController().signal
+      const workerPromise = stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      // workerPromise.catch(() => {}) prevents unhandledRejection in the window between when the
+      // worker rejects (inside advanceTimersByTimeAsync) and when expect().rejects attaches a handler.
+      workerPromise.catch(() => {})
+
+      // Drain microtasks so the worker progresses through text completion and suspends at image generation.
+      await vi.advanceTimersByTimeAsync(1)
+
+      // Advance past the provider image deadline.
+      await vi.advanceTimersByTimeAsync(PROVIDER_IMAGE_TIMEOUT_MS)
+
+      // The real composed providerSignal must be aborted with the correct DOMException reason.
+      expect(capturedProviderSignal?.aborted).toBe(true)
+      expect(capturedProviderSignal?.reason?.name).toBe('TimeoutError')
+
+      await expect(workerPromise).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+
+      // All timer resources freed: no pending fake timers remain.
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('text completion deadline: real composed textSignal aborts when timeout fires; upload never occurs', async () => {
+      vi.useFakeTimers()
+
+      // Text completion hangs and listens on the real textSignal passed by the worker.
+      let capturedTextSignal: AbortSignal | undefined
+      mockChatCreate.mockImplementation((_body: unknown, opts: { signal?: AbortSignal }) => {
+        capturedTextSignal = opts?.signal
+        const p = new Promise<never>((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(opts.signal!.reason), { once: true })
+        })
+        p.catch(() => {})
+        return p
+      })
+
+      const signal = new AbortController().signal
+      const workerPromise = stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      workerPromise.catch(() => {})
+
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(PROVIDER_TEXT_TIMEOUT_MS)
+
+      expect(capturedTextSignal?.aborted).toBe(true)
+      expect(capturedTextSignal?.reason?.name).toBe('TimeoutError')
+
+      await expect(workerPromise).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(mockImagesGenerate).not.toHaveBeenCalled()
+      expect(mockUpload).not.toHaveBeenCalled()
+
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('upload-time deadline: upload completes after deadline but post-upload check throws; publication prevented', async () => {
+      vi.useFakeTimers()
+
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: ONE_VISUAL } }] })
+
+      // Capture real providerSignal; return a valid PNG immediately (image generation does not hang).
+      let capturedProviderSignal: AbortSignal | undefined
+      mockImagesGenerate.mockImplementation((_body: unknown, opts: { signal?: AbortSignal }) => {
+        capturedProviderSignal = opts?.signal
+        return Promise.resolve({ data: [{ b64_json: makePngBuffer(0).toString('base64') }] })
+      })
+
+      // Upload is pending: its resolution is controlled externally so the deadline can fire first.
+      let resolveUpload!: () => void
+      mockUpload.mockImplementation(() =>
+        new Promise<{ error: null }>(r => { resolveUpload = () => r({ error: null }) }),
+      )
+
+      const signal = new AbortController().signal
+      const workerPromise = stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      workerPromise.catch(() => {})
+
+      // Drain microtasks: worker progresses through text, image, PNG validation, reaches upload await.
+      await vi.advanceTimersByTimeAsync(1)
+
+      // Advance past the provider image deadline while upload is still pending.
+      await vi.advanceTimersByTimeAsync(PROVIDER_IMAGE_TIMEOUT_MS)
+
+      // providerSignal is now aborted; upload was called but its promise is still pending.
+      expect(capturedProviderSignal?.aborted).toBe(true)
+      expect(capturedProviderSignal?.reason?.name).toBe('TimeoutError')
+      expect(mockUpload).toHaveBeenCalledOnce()
+
+      // Resolve the upload (simulates upload completing after the deadline expired).
+      resolveUpload()
+
+      // Let the worker process the post-upload providerSignal.throwIfAborted() check.
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Worker must throw — the post-upload check fires and the route never receives status:'generated'.
+      await expect(workerPromise).rejects.toMatchObject({ name: 'TimeoutError' })
+
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('caller abort: job signal abort propagates through composed providerSignal; upload never occurs', async () => {
+      vi.useFakeTimers()
+
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: ONE_VISUAL } }] })
+
+      const controller = new AbortController()
+      let capturedProviderSignal: AbortSignal | undefined
+      mockImagesGenerate.mockImplementation((_body: unknown, opts: { signal?: AbortSignal }) => {
+        capturedProviderSignal = opts?.signal
+        const p = new Promise<never>((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(opts.signal!.reason), { once: true })
+        })
+        p.catch(() => {})
+        return p
+      })
+
+      const workerPromise = stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, controller.signal)
+      workerPromise.catch(() => {})
+
+      await vi.advanceTimersByTimeAsync(1)
+
+      // Abort the caller signal before the provider deadline fires.
+      controller.abort(new DOMException('Job cancelled', 'AbortError'))
+
+      expect(capturedProviderSignal?.aborted).toBe(true)
+      expect(capturedProviderSignal?.reason?.name).toBe('AbortError')
+
+      await vi.advanceTimersByTimeAsync(0)
+
+      await expect(workerPromise).rejects.toMatchObject({ name: 'AbortError' })
+      expect(mockUpload).not.toHaveBeenCalled()
+
+      // providerTimer cleaned up in finally even when caller aborted.
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('upload-time deadline: worker throws and completeAndPublishJob cannot receive status:generated result', async () => {
+      vi.useFakeTimers()
+
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: ONE_VISUAL } }] })
+      mockImagesGenerate.mockImplementation(() =>
+        Promise.resolve({ data: [{ b64_json: makePngBuffer(0).toString('base64') }] })
+      )
+
+      let resolveUpload!: () => void
+      mockUpload.mockImplementation(() =>
+        new Promise<{ error: null }>(r => { resolveUpload = () => r({ error: null }) }),
+      )
+
+      const signal = new AbortController().signal
+      const workerPromise = stageVisualsForJob(JOB_ID, WORKER_ID, LEASE, VERSION, signal)
+      workerPromise.catch(() => {})
+
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(PROVIDER_IMAGE_TIMEOUT_MS)
+      resolveUpload()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The route calls completeAndPublishJob only when stageVisualsForJob returns successfully.
+      // Rejection here proves no status:'generated' items were returned, so publication cannot occur.
+      await expect(workerPromise).rejects.toThrow()
+
+      expect(vi.getTimerCount()).toBe(0)
     })
   })
 })

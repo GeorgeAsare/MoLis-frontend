@@ -1853,16 +1853,74 @@ describe('Phase 3 — Static migration content tests (R7-H10)', () => {
   })
 
   it('[STATIC] migration: preflight checks source-table index counts and definitions (R12-H02)', () => {
+    // Migration uses pg_index joined to two pg_class aliases (ci for the index relation,
+    // ct for the indexed table) and pg_namespace for the schema. Each per-index check
+    // asserts the exact join contract, table, index name, and property/predicate state.
+    // Assertions below bind every index to its exact table through the catalogue join so
+    // that a regression changing ct.relname or the join conditions cannot hide behind a
+    // name-only match.
+
+    // Prove the pg_index/pg_class join structure is present in the scoped preflight block.
+    expect(migrationSql).toContain(
+      "SELECT 1 FROM pg_index i\n    JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid\n    JOIN pg_namespace n ON n.oid=ct.relnamespace"
+    )
+
+    // ── document_analysis indexes (3) ───────────────────────────────────────────
     expect(migrationSql).toContain("tablename='document_analysis') <> 3")
-    expect(migrationSql).toContain("indexname='idx_document_analysis_document_id'")
-    expect(migrationSql).toContain("indexname='idx_document_analysis_user_id'")
-    expect(migrationSql).toContain("D11 DRIFT: document_analysis baseline index set changed")
+
+    // document_analysis_pkey: unique, primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='document_analysis_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: document_analysis_pkey index properties changed")
+
+    // idx_document_analysis_document_id: non-unique, non-primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_document_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: idx_document_analysis_document_id index properties changed")
+
+    // idx_document_analysis_user_id: non-unique, non-primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_user_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: idx_document_analysis_user_id index properties changed")
+
+    // ── documents indexes (3) ────────────────────────────────────────────────────
     expect(migrationSql).toContain("tablename='documents') <> 3")
-    expect(migrationSql).toContain("indexname='documents_source_recording_unique'")
-    expect(migrationSql).toContain("indexname='documents_subject_id_idx'")
-    expect(migrationSql).toContain("D11 DRIFT: documents baseline index set changed")
+
+    // documents_pkey: unique, primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: documents_pkey index properties changed")
+
+    // documents_source_recording_unique: unique, non-primary, partial, predicate=(source_recording_id IS NOT NULL)
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_source_recording_unique'\n      AND i.indisunique AND NOT i.indisprimary AND i.indispartial\n      AND pg_get_expr(i.indpred,i.indrelid)='(source_recording_id IS NOT NULL)'"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: documents_source_recording_unique index properties or predicate changed")
+
+    // documents_subject_id_idx: non-unique, non-primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_subject_id_idx'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: documents_subject_id_idx index properties changed")
+
+    // ── study_visuals indexes (2) ────────────────────────────────────────────────
     expect(migrationSql).toContain("tablename='study_visuals') <> 2")
-    expect(migrationSql).toContain("D11 DRIFT: study_visuals baseline index set changed")
+
+    // study_visuals_pkey: unique, primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: study_visuals_pkey index properties changed")
+
+    // study_visuals_document_id_user_id_key: unique, non-primary, non-partial, no predicate
+    expect(migrationSql).toContain(
+      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_document_id_user_id_key'\n      AND i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+    )
+    expect(migrationSql).toContain("D11 DRIFT: study_visuals_document_id_user_id_key index properties changed")
   })
 
   it('[STATIC] migration: preflight checks routine language/volatility fingerprint (R12-H02)', () => {

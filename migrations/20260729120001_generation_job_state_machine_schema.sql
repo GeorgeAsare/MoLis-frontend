@@ -4428,6 +4428,15 @@ $kavmissd$;
   IF v_result = v_result2 THEN
     RAISE EXCEPTION 'KAV-NFC-NFD: NFC and NFD must produce different canonical text';
   END IF;
+  -- Hard-coded canonical text assertions: S<octet_length>:<value>.
+  -- NFC é = U+00E9 = 2 UTF-8 bytes (C3 A9) → canonical text = S2:é
+  IF v_result <> 'S2:é' THEN
+    RAISE EXCEPTION 'KAV-NFC-NFD NFC canonical text mismatch: expected S2:é, got %', v_result;
+  END IF;
+  -- NFD e+combining-acute = 3 UTF-8 bytes (65 CC 81) → canonical text = S3: + raw NFD bytes.
+  IF v_result2 <> ('S3:' || convert_from(decode('65CC81', 'hex'), 'UTF8')) THEN
+    RAISE EXCEPTION 'KAV-NFC-NFD NFD canonical text mismatch: expected S3:e+combining-acute (3 bytes), got %', v_result2;
+  END IF;
   IF public.fn_sha256_hex(v_result) <> '52669a268b3de8bd030d5dca3e0171b22b253b2ac8ccc8a7a238985fe419e171' THEN
     RAISE EXCEPTION 'KAV-NFC-NFD NFC hash mismatch: got %', public.fn_sha256_hex(v_result);
   END IF;
@@ -5449,95 +5458,127 @@ BEGIN
   -- LIKE prefix checks accepted wrong privilege sets, grantors, and grant-option markers.
   -- aclexplode decomposes each aclitem to exact (grantor, grantee, privilege_type, is_grantable) rows.
 
-  -- ── TABLE default ACL ────────────────────────────────────────────────────────────────────────
-  -- After ALTER DEFAULT PRIVILEGES in section 33: anon removed, authenticated/service_role = CRUD only.
-  -- anon must be absent
+  -- ── TABLE default ACL ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- After section 1b REVOKE ALL ON TABLES FROM anon, authenticated, service_role, PUBLIC:
+  -- only the postgres self-grant remains: {postgres=arwdDxtm/postgres}.
+  -- Runtime roles (anon, authenticated, service_role, PUBLIC/OID-0, any other) must have no entries.
+  -- Exact owner-only design: reject any extra grantee, require the complete postgres self-grant.
+
+  -- Reject any entry where the grantee is not postgres (catches all runtime roles and PUBLIC/OID 0).
   IF EXISTS (
     SELECT 1 FROM pg_default_acl da
     JOIN pg_namespace n ON n.oid=da.defaclnamespace
     WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='r'
-      AND EXISTS (SELECT 1 FROM aclexplode(da.defaclacl) ace WHERE ace.grantee = 'anon'::regrole)
+      AND EXISTS (
+        SELECT 1 FROM aclexplode(da.defaclacl) ace
+        WHERE ace.grantee <> 'postgres'::regrole
+      )
   ) THEN
-    RAISE EXCEPTION 'R15-H02: anon has entry in TABLE default ACL for public schema';
+    RAISE EXCEPTION 'R17-H01: unexpected grantee in TABLE default ACL for public schema after revocation (expected owner-only)';
   END IF;
-  -- No grant options on any TABLE default ACL entry
+  -- Reject any grant options.
   IF EXISTS (
     SELECT 1 FROM pg_default_acl da
     JOIN pg_namespace n ON n.oid=da.defaclnamespace
     WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='r'
       AND EXISTS (SELECT 1 FROM aclexplode(da.defaclacl) ace WHERE ace.is_grantable)
   ) THEN
-    RAISE EXCEPTION 'R15-H02: grant option present in TABLE default ACL for public schema';
+    RAISE EXCEPTION 'R17-H01: grant option present in TABLE default ACL for public schema';
   END IF;
-  -- All TABLE default ACL entries must be granted by postgres
+  -- Reject any unexpected grantors.
   IF EXISTS (
     SELECT 1 FROM pg_default_acl da
     JOIN pg_namespace n ON n.oid=da.defaclnamespace
     WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='r'
       AND EXISTS (SELECT 1 FROM aclexplode(da.defaclacl) ace WHERE ace.grantor <> 'postgres'::regrole)
   ) THEN
-    RAISE EXCEPTION 'R15-H02: unexpected grantor in TABLE default ACL for public schema';
+    RAISE EXCEPTION 'R17-H01: unexpected grantor in TABLE default ACL for public schema';
   END IF;
-  -- authenticated must be present with exactly CRUD (arwd): INSERT, SELECT, UPDATE, DELETE — no others
+  -- Require the postgres self-grant with all 8 TABLE privileges (arwdDxtm).
+  -- Before-state had 8 privileges; after revoking only runtime roles, the postgres entry is unchanged.
   IF NOT EXISTS (
     SELECT 1 FROM pg_default_acl da
     JOIN pg_namespace n ON n.oid=da.defaclnamespace
     WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='r'
-      AND 4 = (SELECT count(*) FROM aclexplode(da.defaclacl) ace
-               WHERE ace.grantee = 'authenticated'::regrole
-                 AND ace.privilege_type IN ('INSERT','SELECT','UPDATE','DELETE')
+      AND 8 = (SELECT count(*) FROM aclexplode(da.defaclacl) ace
+               WHERE ace.grantee = 'postgres'::regrole
+                 AND ace.grantor = 'postgres'::regrole
                  AND NOT ace.is_grantable)
-      AND NOT EXISTS (SELECT 1 FROM aclexplode(da.defaclacl) ace
-                      WHERE ace.grantee = 'authenticated'::regrole
-                        AND ace.privilege_type NOT IN ('INSERT','SELECT','UPDATE','DELETE'))
-  ) THEN
-    RAISE EXCEPTION 'R15-H02: authenticated TABLE default ACL is not exactly CRUD (arwd) for public schema';
-  END IF;
-  -- service_role must be present with exactly CRUD (arwd)
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_default_acl da
-    JOIN pg_namespace n ON n.oid=da.defaclnamespace
-    WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='r'
-      AND 4 = (SELECT count(*) FROM aclexplode(da.defaclacl) ace
-               WHERE ace.grantee = 'service_role'::regrole
-                 AND ace.privilege_type IN ('INSERT','SELECT','UPDATE','DELETE')
-                 AND NOT ace.is_grantable)
-      AND NOT EXISTS (SELECT 1 FROM aclexplode(da.defaclacl) ace
-                      WHERE ace.grantee = 'service_role'::regrole
-                        AND ace.privilege_type NOT IN ('INSERT','SELECT','UPDATE','DELETE'))
-  ) THEN
-    RAISE EXCEPTION 'R15-H02: service_role TABLE default ACL is not exactly CRUD (arwd) for public schema';
-  END IF;
-
-  -- ── FUNCTION default ACL ─────────────────────────────────────────────────────────────────────
-  -- After section 1c REVOKE: anon, authenticated, service_role must not appear. No grant options.
-  IF EXISTS (
-    SELECT 1 FROM pg_default_acl da
-    JOIN pg_namespace n ON n.oid=da.defaclnamespace
-    WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='f'
-      AND EXISTS (
+      AND NOT EXISTS (
         SELECT 1 FROM aclexplode(da.defaclacl) ace
-        WHERE ace.grantee IN ('anon'::regrole, 'authenticated'::regrole, 'service_role'::regrole)
-           OR ace.is_grantable
+        WHERE ace.grantee = 'postgres'::regrole
+          AND ace.privilege_type NOT IN ('INSERT','SELECT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN')
       )
   ) THEN
-    RAISE EXCEPTION 'R15-H02: runtime role or grant option present in FUNCTION default ACL for public schema';
+    RAISE EXCEPTION 'R17-H01: postgres self-grant TABLE default ACL (arwdDxtm, 8 privileges) not found or incomplete after revocation';
   END IF;
 
-  -- ── SEQUENCE default ACL ─────────────────────────────────────────────────────────────────────
-  -- anon must not appear; no grant options permitted; all grantors must be postgres
+  -- ── FUNCTION default ACL ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- After section 1b REVOKE ALL ON FUNCTIONS FROM anon, authenticated, service_role, PUBLIC:
+  -- required exact state: exactly one decomposed row (grantor=postgres, grantee=postgres,
+  -- privilege_type=EXECUTE, is_grantable=false). No more, no fewer.
+  -- Bidirectional EXCEPT ALL proves both directions:
+  --   Expected EXCEPT Actual → any required row that is absent (row missing → fails).
+  --   Actual EXCEPT Expected → any extra row not in the allowlist (unexpected row → fails).
+  -- This catches: absent postgres row, anon/authenticated/service_role/PUBLIC (OID 0),
+  -- wrong grantors, unexpected privilege types, grant options, and any other extra entry.
+  IF EXISTS (
+    -- Required row absent from actual ACL.
+    SELECT 'postgres'::regrole::oid AS grantor, 'postgres'::regrole::oid AS grantee,
+           'EXECUTE'::text AS privilege_type, false::boolean AS is_grantable
+    EXCEPT ALL
+    SELECT ace.grantor, ace.grantee, ace.privilege_type, ace.is_grantable
+    FROM pg_default_acl da
+    JOIN pg_namespace n ON n.oid=da.defaclnamespace
+    CROSS JOIN LATERAL aclexplode(da.defaclacl) ace
+    WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='f'
+  ) OR EXISTS (
+    -- Extra row in actual ACL not in the allowlist.
+    SELECT ace.grantor, ace.grantee, ace.privilege_type, ace.is_grantable
+    FROM pg_default_acl da
+    JOIN pg_namespace n ON n.oid=da.defaclnamespace
+    CROSS JOIN LATERAL aclexplode(da.defaclacl) ace
+    WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='f'
+    EXCEPT ALL
+    SELECT 'postgres'::regrole::oid, 'postgres'::regrole::oid, 'EXECUTE'::text, false::boolean
+  ) THEN
+    RAISE EXCEPTION 'R17-H03/PATCH: FUNCTION default ACL for public schema does not exactly match the single required row (grantor=postgres, grantee=postgres, privilege_type=EXECUTE, is_grantable=false); the required row is absent, extra rows exist, or unexpected grantees/grantors/privileges/grant-options are present';
+  END IF;
+
+  -- ── SEQUENCE default ACL ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- After section 1b REVOKE ALL ON SEQUENCES FROM anon, authenticated, service_role, PUBLIC:
+  -- only the postgres self-grant remains: {postgres=rwU/postgres}.
+  -- Reject any entry where the grantee is not postgres (catches anon, authenticated,
+  -- service_role, PUBLIC/OID 0, and any other role), any unexpected grantors, and grant options.
   IF EXISTS (
     SELECT 1 FROM pg_default_acl da
     JOIN pg_namespace n ON n.oid=da.defaclnamespace
     WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='S'
       AND EXISTS (
         SELECT 1 FROM aclexplode(da.defaclacl) ace
-        WHERE ace.grantee = 'anon'::regrole
-           OR ace.is_grantable
+        WHERE ace.grantee <> 'postgres'::regrole
            OR ace.grantor <> 'postgres'::regrole
+           OR ace.is_grantable
       )
   ) THEN
-    RAISE EXCEPTION 'R15-H02: anon, grant option, or wrong grantor in SEQUENCE default ACL for public schema';
+    RAISE EXCEPTION 'R17-H03: unexpected entry in SEQUENCE default ACL for public schema after revocation (expected postgres self-grant only; anon, authenticated, service_role, and PUBLIC must not appear)';
+  END IF;
+  -- Require the postgres self-grant with all 3 SEQUENCE privileges (rwU): SELECT(r), UPDATE(w), USAGE(U).
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_default_acl da
+    JOIN pg_namespace n ON n.oid=da.defaclnamespace
+    WHERE n.nspname='public' AND da.defaclrole='postgres'::regrole AND da.defaclobjtype='S'
+      AND 3 = (SELECT count(*) FROM aclexplode(da.defaclacl) ace
+               WHERE ace.grantee = 'postgres'::regrole
+                 AND ace.grantor = 'postgres'::regrole
+                 AND NOT ace.is_grantable)
+      AND NOT EXISTS (
+        SELECT 1 FROM aclexplode(da.defaclacl) ace
+        WHERE ace.grantee = 'postgres'::regrole
+          AND ace.privilege_type NOT IN ('SELECT','UPDATE','USAGE')
+      )
+  ) THEN
+    RAISE EXCEPTION 'R17-H03: postgres self-grant SEQUENCE default ACL (rwU, 3 privileges) not found or incomplete after revocation';
   END IF;
 
   -- R10-H05: Verify exact search_path for each function.
