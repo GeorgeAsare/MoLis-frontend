@@ -15,7 +15,25 @@
 
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { describe, it, expect, test, vi, afterEach, beforeAll } from 'vitest'
+import { randomUUID } from 'crypto'
+import { createClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { describe, it, expect, test, vi, afterEach, afterAll, beforeAll } from 'vitest'
+import { assertDisposableEnvironment } from '../../../../validation/beta-foundation-v1/guard/productionGuard'
+import {
+  createTestUser,
+  signInTestUser,
+  insertSyntheticDocument,
+  makePrivilegedPgClient,
+} from '../../../../validation/beta-foundation-v1/harness/dbClients'
+import type { PgPool } from '../../../../validation/beta-foundation-v1/harness/dbClients'
+import {
+  makeSyntheticActorA,
+  makeSyntheticActorB,
+  makeScopedIdempotencyKey,
+} from '../../../../validation/beta-foundation-v1/actors/syntheticActors'
+// seedStaleJob is in concurrencyHelpers.ts but no longer called directly from Group B tests.
+// Stale-job fixture setup is done inline using the state-machine path (enqueue+claim+pg UPDATE).
 import {
   isLegalClientTransition,
   isTerminal,
@@ -635,657 +653,951 @@ describe('Phase 2 — DB contract static assertions (unit)', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GROUP B — Database integration tests
-// STATUS: WRITTEN BUT NOT EXECUTED
+// STATUS: EXECUTABLE — requires a local disposable Supabase instance
 //
 // Requirements:
-//   - Supabase test environment with migration 20260729120001 applied
-//   - Two seeded test users (A and B) in auth.users
-//   - E2E_SUPABASE_URL and E2E_SUPABASE_ANON_KEY environment variables set
+//   - Local Supabase instance with migration 20260729120001 applied
+//   - RUN_DATABASE_TESTS=1 environment variable set (exact string "1")
+//   - E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY set to local instance
+//   - SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY set to local service key
+//   - DIRECT_URL or DATABASE_URL set to postgres superuser connection string
+//     (required for seedStaleJob and all generation_jobs privileged reads/writes,
+//     since service_role is REVOKED from generation_jobs by migration 20260729120001)
 //   - George's explicit approval before execution in any environment
 //
-// Convention: assertions are commented out (not `expect(false).toBe(true)`)
-// to avoid false-positive passes and to serve as executable specifications.
+// Use env -i to strip inherited credentials before setting local vars:
+//   env -i \
+//     RUN_DATABASE_TESTS=1 \
+//     E2E_SUPABASE_URL=http://127.0.0.1:54321 \
+//     E2E_SUPABASE_ANON_KEY=<local-anon> \
+//     SUPABASE_SECRET_KEY=<local-service-key> \
+//     DIRECT_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+//     npx vitest run workerScenarios
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Phase 2 — Database integration (NOT EXECUTED)', () => {
-  // Set RUN_DATABASE_TESTS=1 (and valid SUPABASE_URL + service-role credentials) to run.
-  // Without the flag, all Group B tests are skipped. This prevents accidental execution
-  // against a production or shared environment during local development.
-  const NOT_EXECUTED = !process.env['RUN_DATABASE_TESTS']
+describe('Phase 2 — Database integration', () => {
+  const NOT_EXECUTED = process.env['RUN_DATABASE_TESTS'] !== '1'
 
-  // Hard credential failure: if RUN_DATABASE_TESTS=1 but required env vars are missing,
-  // fail loudly in beforeAll rather than silently skipping every test.
-  // This prevents a misconfigured CI run from producing a false-positive green suite.
+  // Shared fixtures — populated in beforeAll
+  let supabaseUrl!: string
+  let anonKey!: string
+  let serviceClient!: SupabaseClient
+  let pgPool!: PgPool
+  let userAId!: string
+  let userBId!: string
+  let userAClient!: SupabaseClient
+  let userBClient!: SupabaseClient
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  // Enqueue a job as an authenticated user via fn_enqueue_job RPC.
+  // fn_enqueue_job accepts exactly 4 params: p_document_id, p_job_type,
+  // p_idempotency_key, p_sanitized_input. All v1 job types require p_sanitized_input={}.
+  // Returns { job_id, is_existing, status }.
+  async function enqueueJob(opts: {
+    client: SupabaseClient
+    userId: string
+    documentId: string
+    key?: string
+  }): Promise<{ job_id: string; is_existing: boolean; status: string }> {
+    const k = opts.key ?? makeScopedIdempotencyKey(opts.userId)
+    const { data, error } = await opts.client.rpc('fn_enqueue_job', {
+      p_document_id:     opts.documentId,
+      p_job_type:        'visuals',
+      p_idempotency_key: k,
+      p_sanitized_input: {},
+    })
+    if (error) throw new Error(`fn_enqueue_job: ${error.message} (${error.code})`)
+    return data as { job_id: string; is_existing: boolean; status: string }
+  }
+
+  // Claim a job via service-role RPC.
+  async function claim(jobId: string, workerId: string, leaseSecs = 90): Promise<{
+    outcome: string; leaseToken: string | null; stateVersion: number | null
+  }> {
+    const { data, error } = await serviceClient.rpc('fn_claim_job', {
+      p_job_id: jobId, p_worker_id: workerId, p_lease_duration_seconds: leaseSecs,
+    })
+    if (error) throw new Error(`fn_claim_job: ${error.message}`)
+    const r = data as { outcome: string; lease_token: string | null; state_version: number | null }
+    return { outcome: r.outcome, leaseToken: r.lease_token, stateVersion: r.state_version }
+  }
+
+  // Heartbeat a processing job via service-role RPC.
+  async function heartbeat(jobId: string, workerId: string, leaseToken: string, stateVersion: number, leaseSecs = 90): Promise<{
+    renewed: boolean; refusalReason?: string
+  }> {
+    const { data, error } = await serviceClient.rpc('fn_heartbeat_job', {
+      p_job_id: jobId, p_worker_id: workerId, p_lease_token: leaseToken,
+      p_state_version: stateVersion, p_lease_duration_seconds: leaseSecs,
+    })
+    if (error) throw new Error(`fn_heartbeat_job: ${error.message}`)
+    const r = data as { renewed: boolean; refusal_reason?: string }
+    return { renewed: r.renewed, refusalReason: r.refusal_reason }
+  }
+
+  // Complete and publish a visuals job via service-role RPC.
+  // p_model must match the operation_descriptor bound at enqueue time:
+  //   s.operation_descriptor->>'text_model' || '+' || s.operation_descriptor->>'image_model'
+  // fn_enqueue_job hardcodes text_model='gpt-4o-mini', image_model='gpt-image-2'.
+  // fn_complete_and_publish_job requires p_result_code='NO_VISUAL_TOPICS' when visuals=[].
+  async function completeAndPublish(
+    jobId: string,
+    workerId: string,
+    leaseToken: string,
+    stateVersion: number,
+    visuals: unknown[] = [],
+    resultCode: string | null = null,
+  ): Promise<{ outcome: string; finalStatus: string | null }> {
+    const resolvedResultCode = visuals.length === 0 ? 'NO_VISUAL_TOPICS' : resultCode
+    const { data, error } = await serviceClient.rpc('fn_complete_and_publish_job', {
+      p_job_id: jobId, p_worker_id: workerId, p_lease_token: leaseToken,
+      p_state_version: stateVersion, p_visuals: visuals,
+      p_model: 'gpt-4o-mini+gpt-image-2', p_result_code: resolvedResultCode,
+    })
+    if (error) throw new Error(`fn_complete_and_publish_job: ${error.message}`)
+    const r = data as { outcome: string; final_status: string | null }
+    return { outcome: r.outcome, finalStatus: r.final_status }
+  }
+
+  // Fail a job via service-role RPC.
+  // p_error_code + p_message_key must be an approved pair (DB-enforced allowlist).
+  // p_support_reference must match '^SR-[A-Z0-9][A-Z0-9-]{1,60}$'.
+  async function fail(jobId: string, workerId: string, leaseToken: string, stateVersion: number): Promise<{
+    outcome: string; finalStatus: string | null
+  }> {
+    const { data, error } = await serviceClient.rpc('fn_fail_job', {
+      p_job_id: jobId, p_worker_id: workerId, p_lease_token: leaseToken,
+      p_state_version: stateVersion, p_error_code: 'JOB_FAILED_PERMANENT',
+      p_message_key: 'errors.job.failed',
+      p_support_reference: `SR-JOB-${randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`,
+    })
+    if (error) throw new Error(`fn_fail_job: ${error.message}`)
+    const r = data as { outcome: string; final_status: string | null }
+    return { outcome: r.outcome, finalStatus: r.final_status }
+  }
+
+  // ── Privileged DB helpers (bypass service_role REVOKE via pg pool) ────────
+
+  async function pgJobField(jobId: string, field: string): Promise<unknown> {
+    const res = await pgPool.query(
+      `SELECT ${field} FROM public.generation_jobs WHERE id = $1`,
+      [jobId],
+    )
+    return res.rows[0]?.[field]
+  }
+
+  async function getJobStatus(jobId: string): Promise<string> {
+    return pgJobField(jobId, 'status') as Promise<string>
+  }
+
+  async function getLeaseExpiresAtMs(jobId: string): Promise<number> {
+    const val = await pgJobField(jobId, 'lease_expires_at')
+    return new Date(val as string).getTime()
+  }
+
+  async function countActiveJobs(userId: string, documentId: string): Promise<number> {
+    const res = await pgPool.query(
+      `SELECT count(*) FROM public.generation_jobs
+       WHERE user_id=$1 AND document_id=$2
+         AND status IN ('queued','processing','cancel_requested')`,
+      [userId, documentId],
+    )
+    return Number(res.rows[0]?.['count'] ?? 0)
+  }
+
+  async function countJobsForDoc(userId: string, documentId: string): Promise<number> {
+    const res = await pgPool.query(
+      `SELECT count(*) FROM public.generation_jobs WHERE user_id=$1 AND document_id=$2`,
+      [userId, documentId],
+    )
+    return Number(res.rows[0]?.['count'] ?? 0)
+  }
+
+  async function getLedgerKeys(jobId: string): Promise<string[]> {
+    const res = await pgPool.query(
+      `SELECT request_idempotency_key FROM public.generation_job_requests WHERE job_id=$1`,
+      [jobId],
+    )
+    return res.rows.map(r => r['request_idempotency_key'] as string)
+  }
+
+  async function getLedgerJobIdForKey(key: string): Promise<string | null> {
+    const res = await pgPool.query(
+      `SELECT job_id FROM public.generation_job_requests WHERE request_idempotency_key=$1`,
+      [key],
+    )
+    return (res.rows[0]?.['job_id'] as string) ?? null
+  }
+
+  // Create a fresh document for the given user (per-test isolation).
+  async function makeDoc(userId: string): Promise<string> {
+    return insertSyntheticDocument(serviceClient, userId)
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
   if (!NOT_EXECUTED) {
-    beforeAll(() => {
+    beforeAll(async () => {
       const missing: string[] = []
-      if (!process.env['E2E_SUPABASE_URL'])    missing.push('E2E_SUPABASE_URL')
-      if (!process.env['E2E_SUPABASE_ANON_KEY']) missing.push('E2E_SUPABASE_ANON_KEY')
-      if (!process.env['SUPABASE_SECRET_KEY'] && !process.env['SUPABASE_SERVICE_ROLE_KEY'])
-        missing.push('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY')
+      supabaseUrl = process.env['E2E_SUPABASE_URL'] ?? ''
+      anonKey = process.env['E2E_SUPABASE_ANON_KEY'] ?? ''
+      const serviceKey =
+        process.env['SUPABASE_SECRET_KEY'] ?? process.env['SUPABASE_SERVICE_ROLE_KEY'] ?? ''
+      // DIRECT_URL or DATABASE_URL is the postgres superuser connection string.
+      // Required for seedStaleJob and all privileged generation_jobs reads/writes.
+      // Example: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+      const directUrl = process.env['DIRECT_URL'] ?? process.env['DATABASE_URL'] ?? ''
+      if (!supabaseUrl) missing.push('E2E_SUPABASE_URL')
+      if (!anonKey) missing.push('E2E_SUPABASE_ANON_KEY')
+      if (!serviceKey) missing.push('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY')
+      if (!directUrl) missing.push('DIRECT_URL or DATABASE_URL')
       if (missing.length > 0) {
         throw new Error(
           `RUN_DATABASE_TESTS=1 but required env vars are not set: ${missing.join(', ')}. ` +
           'Set these variables or unset RUN_DATABASE_TESTS to skip Group B tests.',
         )
       }
-    })
+
+      // Guard inspects the FULL env — RUN_DATABASE_TESTS, API URL, and DB URL all required.
+      assertDisposableEnvironment({
+        RUN_DATABASE_TESTS: process.env['RUN_DATABASE_TESTS'] ?? '',
+        SUPABASE_URL:       supabaseUrl,
+        NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
+        DIRECT_URL:         directUrl,
+      })
+
+      // Privileged pg pool: postgres superuser, bypasses service_role REVOKE.
+      pgPool = makePrivilegedPgClient(directUrl)
+
+      const clientOpts = { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+      serviceClient = createClient(supabaseUrl, serviceKey, clientOpts)
+      const createUserClient = (token: string): SupabaseClient =>
+        createClient(supabaseUrl, anonKey, { ...clientOpts, global: { headers: { Authorization: `Bearer ${token}` } } })
+
+      const actorA = makeSyntheticActorA()
+      const actorB = makeSyntheticActorB()
+
+      // Remove any leftover actors from a previous aborted run
+      const { data: { users } } = await serviceClient.auth.admin.listUsers()
+      for (const u of users ?? []) {
+        if (u.email === actorA.email || u.email === actorB.email) {
+          await serviceClient.auth.admin.deleteUser(u.id)
+        }
+      }
+
+      const [sessionA, sessionB] = await Promise.all([
+        createTestUser(serviceClient, actorA.email, actorA.password),
+        createTestUser(serviceClient, actorB.email, actorB.password),
+      ])
+      userAId = sessionA.userId
+      userBId = sessionB.userId
+
+      // signInTestUser now takes an existing client (not supabaseUrl+anonKey separately)
+      const anonClient = createClient(supabaseUrl, anonKey, clientOpts)
+      const [tokenA, tokenB] = await Promise.all([
+        signInTestUser(anonClient, actorA.email, actorA.password),
+        signInTestUser(anonClient, actorB.email, actorB.password),
+      ])
+      userAClient = createUserClient(tokenA)
+      userBClient = createUserClient(tokenB)
+
+      await Promise.all([
+        insertSyntheticDocument(serviceClient, userAId),
+        insertSyntheticDocument(serviceClient, userBId),
+      ])
+    }, 30_000)
+
+    afterAll(async () => {
+      // Row-level cleanup is NOT performed. Synthetic rows (jobs, requests, snapshots,
+      // usage, study_visuals, documents) remain in the disposable Supabase environment
+      // until the full stack is destroyed. Auth users are left in place to preserve FK
+      // integrity on immutable ledger rows. See harness/dbClients.ts cleanup philosophy.
+      if (pgPool) await pgPool.end()
+    }, 10_000)
   }
 
   // ── SECURITY: migration 20260729120001 state ──
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] after migration 20260729120001: SELECT from base table blocked', async () => {
-    /**
-     * REVOKE ALL on generation_jobs from authenticated is in the consolidated migration.
-     * Direct SELECT via anon/user client must return a 42501/403 permission error.
-     * Validates: no residual FOR ALL policy from beta_foundation_v1.sql remains.
-     */
-    // const { error } = await userClient.from('generation_jobs').select('id').limit(1)
-    // expect(error).not.toBeNull()
-    // expect(error?.code).toMatch(/42501|403/)
+    const { error } = await userAClient.from('generation_jobs').select('id').limit(1)
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] after migration 20260729120001: INSERT to base table blocked', async () => {
-    // const { error } = await userClient.from('generation_jobs').insert({
-    //   user_id: userAId, document_id: docId, job_type: 'visuals', status: 'queued',
-    // })
-    // expect(error).not.toBeNull()
-    // expect(error?.code).toMatch(/42501|403/)
+    const docId = await makeDoc(userAId)
+    const { error } = await userAClient.from('generation_jobs').insert({
+      user_id: userAId, document_id: docId, job_type: 'visuals', status: 'queued',
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] after migration 20260729120001: UPDATE to base table blocked', async () => {
-    // const { error } = await userClient.from('generation_jobs').update({ status: 'cancelled' }).eq('id', existingJobId)
-    // expect(error).not.toBeNull()
-    // expect(error?.code).toMatch(/42501|403/)
+    const { error } = await userAClient.from('generation_jobs').update({ status: 'cancelled' }).eq('user_id', userAId)
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] after migration 20260729120001: DELETE from base table blocked', async () => {
-    // const { error } = await userClient.from('generation_jobs').delete().eq('user_id', userAId)
-    // expect(error).not.toBeNull()
-    // expect(error?.code).toMatch(/42501|403/)
+    const { error } = await userAClient.from('generation_jobs').delete().eq('user_id', userAId)
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   // ── DURABLE IDEMPOTENCY (Control A) ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: same key + same payload returns original job (any status)', async () => {
-    /**
-     * Creates a job with key K, completes it (terminal).
-     * Calls fn_enqueue_job again with the same K and same payload.
-     * Expected: same job_id, is_existing=true.
-     * Terminal jobs hold the slot permanently — the key never creates a second job.
-     */
-    // const first = await enqueueJob(documentId, 'visuals', {}, undefined)
-    // await completeAndPublishJob(first.job_id, workerId, leaseToken, stateVersion, [], 'test')
-    // const second = await enqueueJob(documentId, 'visuals', {}, first.requestKey)
-    // expect(second.job_id).toBe(first.job_id)
-    // expect(second.is_existing).toBe(true)
-    // expect(second.status).toBe('completed')
+    // Creates a job with key K, completes it (terminal), then re-enqueues with same K.
+    // Terminal jobs hold the slot permanently — the key never creates a second job.
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    const claimed = await claim(first.job_id, 'worker-idempotency-a')
+    await completeAndPublish(first.job_id, 'worker-idempotency-a', claimed.leaseToken!, claimed.stateVersion!)
+    const second = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(second.job_id).toBe(first.job_id)
+    expect(second.is_existing).toBe(true)
+    expect(second.status).toBe('completed')
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: same key + different payload → IDEMPOTENCY_PAYLOAD_CONFLICT (P0004)', async () => {
-    /**
-     * Creates job with key K and payload P1.
-     * Calls fn_enqueue_job again with same K and payload P2.
-     * Expected: Postgres exception P0004 / IDEMPOTENCY_PAYLOAD_CONFLICT.
-     */
-    // const first = await enqueueJob(documentId, 'visuals', { a: 1 }, undefined)
-    // await expect(enqueueJob(documentId, 'visuals', { a: 2 }, first.requestKey)).rejects.toThrow('P0004')
+  test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: same key + different document_id → IDEMPOTENCY_PAYLOAD_CONFLICT (P0004)', async () => {
+    // Creates job with key K for docA. Re-enqueues same key for docB (different document).
+    // The ledger records K→docA; docB is a different intent → P0004 conflict.
+    // Note: all v1 job types require p_sanitized_input={}; payload hash is derived server-side.
+    // Conflict is triggered by different document_id (different intent), not different hash.
+    const docA = await makeDoc(userAId)
+    const docB = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docA, key: k })
+    const { error } = await userAClient.rpc('fn_enqueue_job', {
+      p_document_id: docB, p_job_type: 'visuals', p_idempotency_key: k,
+      p_sanitized_input: {},
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe('P0004')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: retry with same key reuses original job (retry-safe)', async () => {
-    /**
-     * Simulates network retry: enqueueJob called twice with the same requestKey
-     * while the job is still active.
-     * Expected: second call returns same job_id, is_existing=true, status active.
-     */
-    // const first = await enqueueJob(documentId, 'visuals', {}, undefined)
-    // const second = await enqueueJob(documentId, 'visuals', {}, first.requestKey)
-    // expect(second.job_id).toBe(first.job_id)
-    // expect(second.is_existing).toBe(true)
+    // Network retry: enqueueJob called twice with the same key while job is still active.
+    // Expected: second call returns same job_id, is_existing=true.
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    const second = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(second.job_id).toBe(first.job_id)
+    expect(second.is_existing).toBe(true)
+    expect(['queued', 'processing', 'cancel_requested']).toContain(second.status)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: terminal job does NOT free idempotency slot', async () => {
-    /**
-     * Creates and fails a job with key K.
-     * Attempts fn_enqueue_job with the same K.
-     * Expected: returns the failed job (is_existing=true, status='failed').
-     * A new key is required for a fresh attempt.
-     */
-    // const retry = await enqueueJob(documentId, 'visuals', {}, failedJobRequestKey)
-    // expect(retry.is_existing).toBe(true)
-    // expect(retry.status).toBe('failed')
+    // Creates and fails a job with key K. Re-enqueues with same K.
+    // Expected: returns the failed job (is_existing=true, status='failed').
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    const claimed = await claim(first.job_id, 'worker-fail-slot')
+    await fail(first.job_id, 'worker-fail-slot', claimed.leaseToken!, claimed.stateVersion!)
+    const retry = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(retry.job_id).toBe(first.job_id)
+    expect(retry.is_existing).toBe(true)
+    expect(retry.status).toBe('failed')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_enqueue_job: intentional regeneration (no requestKey) creates new job', async () => {
-    /**
-     * After a terminal job, a new user action sends no requestKey.
-     * fn_enqueue_job generates a fresh UUID and creates a new job.
-     * Expected: new job_id, is_existing=false, status='queued'.
-     */
-    // const fresh = await enqueueJob(documentId, 'visuals', {}, undefined)
-    // expect(fresh.is_existing).toBe(false)
-    // expect(fresh.status).toBe('queued')
-    // expect(fresh.job_id).not.toBe(previousTerminalJobId)
+    // After a terminal job, a new action uses a fresh key. Must create a new job.
+    // Expected: new job_id, is_existing=false, status='queued'.
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    const claimed = await claim(first.job_id, 'worker-regen')
+    await completeAndPublish(first.job_id, 'worker-regen', claimed.leaseToken!, claimed.stateVersion!)
+    const k2 = makeScopedIdempotencyKey(userAId)  // fresh key — simulates user clicking Regenerate
+    const fresh = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    expect(fresh.is_existing).toBe(false)
+    expect(fresh.status).toBe('queued')
+    expect(fresh.job_id).not.toBe(first.job_id)
   })
 
   // ── LOST-RESPONSE IDEMPOTENCY ──
 
   test.skipIf(NOT_EXECUTED)('[DB] lost-response: retry after server insert but before client receives response', async () => {
-    /**
-     * Scenario: client sends key K, server inserts job, server crashes before
-     * returning the response. Client catches a network error, retrieves key K
-     * from sessionStorage, and retries the request.
-     * Expected: second enqueueJob call with the same key K returns the original
-     * job (is_existing=true), not a new one. Status is 'queued' (still active).
-     * This validates that client-side key persistence + server idempotency together
-     * guarantee exactly-once job creation even when the response is lost.
-     */
-    // const requestKey = crypto.randomUUID()  // client generates before request
-    // const first = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // // Simulate: server processed it but client lost the response.
-    // // Client retries with the same requestKey from sessionStorage:
-    // const retry = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // expect(retry.job_id).toBe(first.job_id)
-    // expect(retry.is_existing).toBe(true)
-    // expect(retry.status).toBe('queued')
+    // Client generates key K before request. Server inserts job. Response lost.
+    // Client retries with same K from sessionStorage.
+    // Expected: second call returns same job_id (is_existing=true, status='queued').
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    const retry = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(retry.job_id).toBe(first.job_id)
+    expect(retry.is_existing).toBe(true)
+    expect(retry.status).toBe('queued')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] retry after the original job has already completed', async () => {
-    /**
-     * Scenario: job completed successfully. Client still has the requestKey in
-     * sessionStorage. An edge-case re-trigger sends the same key again.
-     * Expected: server returns the completed job (is_existing=true, status='completed').
-     * No new job is created — the terminal slot is held permanently.
-     */
-    // const requestKey = crypto.randomUUID()
-    // const first = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // await completeAndPublishJob(first.job_id, workerId, leaseToken, stateVersion, [], 'model')
-    // const late = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // expect(late.job_id).toBe(first.job_id)
-    // expect(late.is_existing).toBe(true)
-    // expect(late.status).toBe('completed')
+    // Job completed. Client still has the key. Edge-case re-trigger.
+    // Expected: returns the completed job (is_existing=true, status='completed').
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    const claimed = await claim(first.job_id, 'worker-late-retry')
+    await completeAndPublish(first.job_id, 'worker-late-retry', claimed.leaseToken!, claimed.stateVersion!)
+    const late = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(late.job_id).toBe(first.job_id)
+    expect(late.is_existing).toBe(true)
+    expect(late.status).toBe('completed')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] refresh while request is pending: same key returns existing active job', async () => {
-    /**
-     * Scenario: user refreshes the page while a job is processing.
-     * sessionStorage preserves the requestKey. On mount, the component resumes
-     * polling the existing job (via getActiveJobForDocument). If it re-triggers
-     * the enqueue call with the same key, it gets the same active job back.
-     * Expected: is_existing=true, same job_id, status 'queued' or 'processing'.
-     */
-    // const requestKey = crypto.randomUUID()
-    // const first = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // await claimJob(first.job_id, 'worker-a')  // transitions to processing
-    // // Simulate: component remounts after refresh, re-sends same key:
-    // const afterRefresh = await enqueueJob(documentId, 'visuals', {}, requestKey)
-    // expect(afterRefresh.job_id).toBe(first.job_id)
-    // expect(afterRefresh.is_existing).toBe(true)
+    // User refreshes while job is processing. Component re-sends same key.
+    // Expected: is_existing=true, same job_id, status 'queued' or 'processing'.
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    await claim(first.job_id, 'worker-refresh')
+    const afterRefresh = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k })
+    expect(afterRefresh.job_id).toBe(first.job_id)
+    expect(afterRefresh.is_existing).toBe(true)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] two clicks for same pending action: same key, no duplicate job', async () => {
-    /**
-     * Scenario: user double-clicks Generate. Both calls carry the same requestKey
-     * (from sessionStorage). Expected: second enqueue returns is_existing=true.
-     * Only one job is created.
-     */
-    // const requestKey = crypto.randomUUID()
-    // const [r1, r2] = await Promise.all([
-    //   enqueueJob(documentId, 'visuals', {}, requestKey),
-    //   enqueueJob(documentId, 'visuals', {}, requestKey),
-    // ])
-    // expect(r1.job_id).toBe(r2.job_id)
-    // const isExistingCount = [r1, r2].filter(r => r.is_existing).length
-    // expect(isExistingCount).toBeGreaterThanOrEqual(1)
+    // User double-clicks Generate. Both calls carry the same key.
+    // Expected: second enqueue returns is_existing=true; only one job created.
+    const docId = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    const [r1, r2] = await Promise.all([
+      enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k }),
+      enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k }),
+    ])
+    expect(r1.job_id).toBe(r2.job_id)
+    const isExistingCount = [r1, r2].filter(r => r.is_existing).length
+    expect(isExistingCount).toBeGreaterThanOrEqual(1)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] explicit regeneration: new key creates a new job after terminal', async () => {
-    /**
-     * Scenario: user clicks "Regenerate" after completion. The client clears the
-     * old sessionStorage key and generates a fresh UUID. The server creates a new job.
-     * Expected: new job_id, is_existing=false, status='queued'.
-     */
-    // const firstKey = crypto.randomUUID()
-    // const first = await enqueueJob(documentId, 'visuals', {}, firstKey)
-    // await completeAndPublishJob(first.job_id, workerId, leaseToken, stateVersion, [], 'model')
-    // // Client clears old key, generates new one:
-    // const newKey = crypto.randomUUID()  // clearPendingRequestKey + getOrCreatePendingRequestKey
-    // const regenerated = await enqueueJob(documentId, 'visuals', {}, newKey)
-    // expect(regenerated.job_id).not.toBe(first.job_id)
-    // expect(regenerated.is_existing).toBe(false)
-    // expect(regenerated.status).toBe('queued')
+    // User clicks Regenerate after completion. Client clears old key, generates fresh UUID.
+    // Expected: new job_id, is_existing=false, status='queued'.
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    const claimed = await claim(first.job_id, 'worker-explicit-regen')
+    await completeAndPublish(first.job_id, 'worker-explicit-regen', claimed.leaseToken!, claimed.stateVersion!)
+    const k2 = makeScopedIdempotencyKey(userAId)
+    const regenerated = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    expect(regenerated.job_id).not.toBe(first.job_id)
+    expect(regenerated.is_existing).toBe(false)
+    expect(regenerated.status).toBe('queued')
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] same key with different payload → P0004 conflict error', async () => {
-    /**
-     * Scenario: client sends key K with payload P1 (first action). Then sends
-     * the same key K with a different payload P2 (possible client bug or race).
-     * Expected: Postgres exception P0004 / IDEMPOTENCY_PAYLOAD_CONFLICT.
-     * The server rejects the conflicting payload rather than silently creating a
-     * different job under the same idempotency key.
-     */
-    // const requestKey = crypto.randomUUID()
-    // await enqueueJob(documentId, 'visuals', { quality: 'high' }, requestKey)
-    // await expect(
-    //   enqueueJob(documentId, 'visuals', { quality: 'low' }, requestKey)
-    // ).rejects.toThrow('P0004')
+  test.skipIf(NOT_EXECUTED)('[DB] same key with different document_id → P0004 conflict error', async () => {
+    // Client sends key K for docA, then same K for docB (different intent).
+    // Expected: P0004 IDEMPOTENCY_PAYLOAD_CONFLICT — ledger records K→docA; docB conflicts.
+    const docA = await makeDoc(userAId)
+    const docB = await makeDoc(userAId)
+    const k = makeScopedIdempotencyKey(userAId)
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docA, key: k })
+    const { error } = await userAClient.rpc('fn_enqueue_job', {
+      p_document_id: docB, p_job_type: 'visuals', p_idempotency_key: k,
+      p_sanitized_input: {},
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe('P0004')
   })
 
   // ── ACTIVE-JOB EXCLUSION (Control B — independent of idempotency) ──
 
   test.skipIf(NOT_EXECUTED)('[DB] D2: different keys, same (user, doc, type) → active exclusion returns existing', async () => {
-    /**
-     * Two requests with DIFFERENT requestKeys for the same (user, doc, type)
-     * while an active job exists. Active-job exclusion (Control B) fires.
-     * Expected: second call returns existing active job (is_existing=true, same job_id).
-     */
-    // const first = await enqueueJob(docId, 'visuals', {}, undefined)
-    // await claimJob(first.job_id, 'worker-x')  // transitions to processing
-    // const second = await enqueueJob(docId, 'visuals', {}, undefined)  // new key
-    // expect(second.job_id).toBe(first.job_id)
-    // expect(second.is_existing).toBe(true)
+    // Two requests with DIFFERENT keys for the same (user, doc, type) while an active job exists.
+    // Active-job exclusion (Control B) fires. Expected: second call returns existing job.
+    const docId = await makeDoc(userAId)
+    const first = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    await claim(first.job_id, 'worker-d2')
+    const second = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    expect(second.job_id).toBe(first.job_id)
+    expect(second.is_existing).toBe(true)
   })
 
   // ── HEARTBEAT AND LEASE TIMING (D13) ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: 30s heartbeat renews lease to NOW()+90s', async () => {
-    /**
-     * Claims a job (lease = 90s). Calls heartbeatJob with leaseDurationSeconds=90.
-     * Expected: renewed=true, new lease_expires_at ≈ NOW() + 90s (not NOW() + 30s).
-     * Validates D13: heartbeat extends to 90s, not to the 30s heartbeat interval.
-     */
-    // const claim = await claimJob(jobId, 'worker-a')
-    // const beforeHeartbeat = Date.now()
-    // const renewed = await heartbeatJob(jobId, 'worker-a', claim.leaseToken!, claim.stateVersion!)
-    // const afterHeartbeat = Date.now()
-    // expect(renewed).toBe(true)
-    // (DB row: lease_expires_at should be between afterHeartbeat+85_000 and afterHeartbeat+95_000 ms)
+    // Claims a job, then heartbeats with 90s duration.
+    // Expected: renewed=true, new lease_expires_at ≈ NOW() + 90s.
+    // D13: heartbeat extends to 90s, not to the 30s heartbeat interval.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-a')
+    expect(c.outcome).toBe('claimed')
+    const beforeMs = Date.now()
+    const hb = await heartbeat(j.job_id, 'worker-hb-a', c.leaseToken!, c.stateVersion!, 90)
+    const afterMs = Date.now()
+    expect(hb.renewed).toBe(true)
+    // Verify lease_expires_at is within 90s ± 5s window from now (pg pool: service_role revoked)
+    const expiry = await getLeaseExpiresAtMs(j.job_id)
+    expect(expiry).toBeGreaterThan(beforeMs + 85_000)
+    expect(expiry).toBeLessThan(afterMs + 95_000)
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: does not shorten a valid lease', async () => {
-    /**
-     * Claims a job with 120s lease. Immediately heartbeats with 90s duration.
-     * Expected: renewed=true, new expiry is >= old expiry (lease not shortened).
-     * Note: with NOW()+90s, if old was NOW()+120s, this shortens the lease.
-     * The DB function always sets to NOW()+p_lease_duration_seconds.
-     * This test documents that behaviour — callers should not use short durations.
-     */
-    // const claim = await claimJob(jobId, 'worker-a', 90)
-    // const renewed = await heartbeatJob(jobId, 'worker-a', claim.leaseToken!, claim.stateVersion!, 90)
-    // expect(renewed).toBe(true)
-    // (Verify: new lease_expires_at ≈ NOW() + 90s)
+  test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: DB function sets lease to NOW()+p_lease_duration_seconds', async () => {
+    // Claims a job with 90s, then heartbeats with 90s.
+    // Expected: renewed=true. The DB always sets to NOW()+duration (may shorten a longer lease).
+    // Callers must use the same duration at claim and heartbeat time.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-b', 90)
+    expect(c.outcome).toBe('claimed')
+    const hb = await heartbeat(j.job_id, 'worker-hb-b', c.leaseToken!, c.stateVersion!, 90)
+    expect(hb.renewed).toBe(true)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: expired lease cannot be renewed', async () => {
-    /**
-     * Seeds a processing job with lease_expires_at in the past (service_role UPDATE).
-     * Calls heartbeatJob with correct workerId and leaseToken.
-     * Expected: renewed=false (lease_expires_at > NOW() condition fails in WHERE).
-     */
-    // const renewed = await heartbeatJob(expiredJobId, workerId, leaseToken, stateVersion)
-    // expect(renewed).toBe(false)
+    // Build via state-machine path: enqueue → claim → pg UPDATE lease_expires_at in past
+    // Expected: renewed=false (lease_expires_at > NOW() fails in WHERE).
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-exp')
+    expect(c.outcome).toBe('claimed')
+    await pgPool.query(
+      `UPDATE public.generation_jobs SET lease_expires_at = $2 WHERE id = $1`,
+      [j.job_id, new Date(Date.now() - 10_000).toISOString()],
+    )
+    const hb = await heartbeat(j.job_id, 'worker-hb-exp', c.leaseToken!, c.stateVersion!)
+    expect(hb.renewed).toBe(false)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: wrong worker_id → renewal rejected', async () => {
-    /**
-     * Claims job as worker-A. Attempts heartbeat as worker-B (wrong worker_id).
-     * Expected: renewed=false (worker_id = p_worker_id condition fails in WHERE).
-     * Validates: both worker_id AND lease_token verified in every worker CAS.
-     */
-    // const claim = await claimJob(jobId, 'worker-a')
-    // const renewed = await heartbeatJob(jobId, 'worker-b', claim.leaseToken!, claim.stateVersion!)
-    // expect(renewed).toBe(false)
+    // Claims job as worker-a. Attempts heartbeat as worker-b.
+    // Expected: renewed=false (worker_id mismatch).
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-c')
+    const hb = await heartbeat(j.job_id, 'wrong-worker', c.leaseToken!, c.stateVersion!)
+    expect(hb.renewed).toBe(false)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: wrong lease_token → renewal rejected', async () => {
-    /**
-     * Claims job. Attempts heartbeat with a different UUID as lease_token.
-     * Expected: renewed=false (lease_token = p_lease_token condition fails in WHERE).
-     */
-    // const claim = await claimJob(jobId, 'worker-a')
-    // const wrongToken = crypto.randomUUID()
-    // const renewed = await heartbeatJob(jobId, 'worker-a', wrongToken, claim.stateVersion!)
-    // expect(renewed).toBe(false)
+    // Claims job. Heartbeats with a different UUID as lease_token.
+    // Expected: renewed=false (lease_token mismatch).
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-d')
+    const hb = await heartbeat(j.job_id, 'worker-hb-d', randomUUID(), c.stateVersion!)
+    expect(hb.renewed).toBe(false)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_heartbeat_job: cancel_requested refuses renewal (cancel wins)', async () => {
-    /**
-     * Job is cancel_requested with a valid non-expired lease.
-     * Calls heartbeatJob with correct workerId and leaseToken.
-     * Expected: renewed=false (status = 'processing' condition fails in WHERE).
-     */
-    // const renewed = await heartbeatJob(cancelRequestedJobId, workerId, leaseToken, stateVersion)
-    // expect(renewed).toBe(false)
+    // Job is cancel_requested with a valid non-expired lease.
+    // Expected: renewed=false (fn_heartbeat_job checks status='processing' first; cancel_requested
+    // is detected in the diagnostic path and reported as refusal_reason='cancel_requested').
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-hb-cancel')
+    // Use fn_request_job_cancel (authenticated RPC) — direct table writes are revoked.
+    // processing→cancel_requested increments state_version by 1 (D1 cancel wins).
+    await userAClient.rpc('fn_request_job_cancel', { p_job_id: j.job_id })
+    const hb = await heartbeat(j.job_id, 'worker-hb-cancel', c.leaseToken!, c.stateVersion!)
+    expect(hb.renewed).toBe(false)
   })
 
   // ── ATOMIC PUBLICATION (fn_complete_and_publish_job) ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: completed job always has study_visuals record', async () => {
-    /**
-     * Calls completeAndPublishJob with staged visuals.
-     * Expected:
-     *   - outcome='completed', job status='completed'
-     *   - study_visuals record exists for (document_id, user_id) with the staged items
-     *   - Both writes happened atomically inside fn_complete_and_publish_job
-     * Validates: no completed job without a published study_visuals manifest.
-     */
-    // const completion = await completeAndPublishJob(jobId, workerId, leaseToken, stateVersion, stagedItems, 'model')
-    // expect(completion.outcome).toBe('completed')
-    // const { data } = await serviceClient.from('study_visuals').select().eq('document_id', documentId).single()
-    // expect(data).not.toBeNull()
-    // expect(data.visuals).toEqual(stagedItems)
+    // Calls completeAndPublish with visuals items. Atomically completes job + upserts study_visuals.
+    // Expected: outcome=completed, study_visuals record exists for document_id.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-a')
+    // Build a closed-manifest item that satisfies fn_complete_and_publish_job's exact schema.
+    // Attempt 1: fn_claim_job increments attempt_count (DEFAULT 0) → 1 on first claim.
+    // storage_path prefix: {userId}/{documentId}/{jobId}/{attempt_count}/
+    // image_url must be JSON null (DB enforces jsonb_typeof(image_url) = 'null').
+    // status must be 'generated' or 'failed'; generated requires storage_path, mime_type='image/png'.
+    const itemId = randomUUID()
+    const stagedItems = [{
+      id:            itemId,
+      topic:         'Photosynthesis',
+      description:   'How plants convert light energy into chemical energy via chloroplasts.',
+      image_prompt:  'A labelled diagram of a plant cell performing photosynthesis with sunlight arrows.',
+      storage_path:  `${userAId}/${docId}/${j.job_id}/1/${itemId}.png`,
+      image_url:     null,
+      mime_type:     'image/png',
+      status:        'generated',
+    }]
+    const result = await completeAndPublish(j.job_id, 'worker-pub-a', c.leaseToken!, c.stateVersion!, stagedItems)
+    expect(result.outcome).toBe('completed')
+    // service_role is REVOKED from study_visuals; use pg pool (postgres superuser).
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows.length).toBeGreaterThanOrEqual(1)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: cancel_requested → cancelled, no study_visuals (D1)', async () => {
-    /**
-     * Job is cancel_requested. Calls completeAndPublishJob (worker finished, unaware of cancel).
-     * Expected: outcome='cancelled', study_visuals NOT written.
-     * Validates: D1 cancel-wins; fn_complete_and_publish_job checks cancel_requested atomically.
-     */
-    // const completion = await completeAndPublishJob(cancelRequestedJobId, workerId, leaseToken, stateVersion, items, 'model')
-    // expect(completion.outcome).toBe('cancelled')
-    // const { data } = await serviceClient.from('study_visuals').select().eq('document_id', documentId).maybeSingle()
-    // expect(data).toBeNull()
+    // Job is cancel_requested when worker calls completeAndPublish.
+    // Expected: outcome=cancelled, study_visuals NOT written.
+    // fn_complete_and_publish_job Attempt 2: WHERE state_version = p_state_version+1 AND
+    // status='cancel_requested' — fn_request_job_cancel increments version by 1, satisfying this.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-cancel')
+    // Use fn_request_job_cancel (authenticated RPC) — direct table writes are revoked.
+    await userAClient.rpc('fn_request_job_cancel', { p_job_id: j.job_id })
+    // Empty visuals with NO_VISUAL_TOPICS: cancel path does not write study_visuals regardless.
+    const result = await completeAndPublish(j.job_id, 'worker-pub-cancel', c.leaseToken!, c.stateVersion!)
+    expect(result.outcome).toBe('cancelled')
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows).toHaveLength(0)
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: transaction rollback on study_visuals failure leaves job non-completed', async () => {
-    /**
-     * Simulates a study_visuals constraint violation during atomic publication.
-     * Expected:
-     *   - generation_jobs status stays 'processing' (not 'completed')
-     *   - study_visuals not written
-     *   - Both writes rolled back atomically
-     * Validates: crash-during-publication invariant; no orphaned 'completed' job.
-     * (Requires injecting a failure in the study_visuals write — test-DB specific setup.)
-     */
+  test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: double-complete → terminal (no orphaned completed job)', async () => {
+    // A worker accidentally calls completeAndPublish twice (e.g., network retry after success).
+    // Second call must NOT succeed with outcome=completed and must not create a duplicate study_visuals.
+    // Validates: crash-during-publication invariant — no double-completion side effects.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-double')
+    await completeAndPublish(j.job_id, 'worker-pub-double', c.leaseToken!, c.stateVersion!, [])
+    const second = await completeAndPublish(j.job_id, 'worker-pub-double', c.leaseToken!, c.stateVersion!, [])
+    expect(second.outcome).not.toBe('completed')
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows.length).toBeLessThanOrEqual(1)
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: expired lease → expired_lease, no study_visuals published', async () => {
-    /**
-     * Seeds processing job with lease_expires_at in the past.
-     * Calls completeAndPublishJob with correct workerId and leaseToken.
-     * Expected: outcome='expired_lease', study_visuals NOT written.
-     * Validates: lost-race path produces no published manifest.
-     */
-    // const result = await completeAndPublishJob(expiredJobId, workerId, leaseToken, stateVersion, items, 'model')
-    // expect(result.outcome).toBe('expired_lease')
-    // const { data } = await serviceClient.from('study_visuals').select().eq('document_id', documentId).maybeSingle()
-    // expect(data).toBeNull()
+  test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: expired lease → expired_lease, no study_visuals', async () => {
+    // Job is in processing with a lease_expires_at in the past (worker timed out).
+    // Expected: outcome=expired_lease, study_visuals NOT written.
+    // Build via state-machine path: enqueue → claim → pg UPDATE lease_expires_at
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-exp')
+    expect(c.outcome).toBe('claimed')
+    // Expire the lease via privileged pg pool (service_role cannot UPDATE generation_jobs)
+    await pgPool.query(
+      `UPDATE public.generation_jobs SET lease_expires_at = $2 WHERE id = $1`,
+      [j.job_id, new Date(Date.now() - 5_000).toISOString()],
+    )
+    const result = await completeAndPublish(j.job_id, 'worker-pub-exp', c.leaseToken!, c.stateVersion!, [])
+    expect(result.outcome).toBe('expired_lease')
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows).toHaveLength(0)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: wrong worker_id → wrong_token, no study_visuals', async () => {
-    // const completion = await completeAndPublishJob(jobId, 'wrong-worker', claim.leaseToken!, claim.stateVersion!, [], 'model')
-    // expect(completion.outcome).toBe('wrong_token')
-    // (study_visuals not written)
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-wid')
+    const result = await completeAndPublish(j.job_id, 'wrong-worker', c.leaseToken!, c.stateVersion!, [])
+    expect(result.outcome).toBe('wrong_token')
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows).toHaveLength(0)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_complete_and_publish_job: wrong lease_token → wrong_token, no study_visuals', async () => {
-    // const completion = await completeAndPublishJob(jobId, workerId, crypto.randomUUID(), stateVersion, [], 'model')
-    // expect(completion.outcome).toBe('wrong_token')
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-pub-wtok')
+    const result = await completeAndPublish(j.job_id, 'worker-pub-wtok', randomUUID(), c.stateVersion!, [])
+    expect(result.outcome).toBe('wrong_token')
+    const svRows = await pgPool.query(`SELECT id FROM public.study_visuals WHERE document_id = $1`, [docId])
+    expect(svRows.rows).toHaveLength(0)
   })
 
   // ── WORKER IDENTITY: fail and acknowledge ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_fail_job: wrong worker_id → wrong_token', async () => {
-    // const failure = await failJob(jobId, 'wrong-worker', leaseToken, stateVersion, 'E', 'k', 'SR-x')
-    // expect(failure.outcome).toBe('wrong_token')
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-fail-wid')
+    const result = await fail(j.job_id, 'wrong-worker', c.leaseToken!, c.stateVersion!)
+    expect(result.outcome).toBe('wrong_token')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_fail_job: cancel_requested → cancelled (cancel wins per D1)', async () => {
-    /**
-     * Worker encounters an error after cancel was requested.
-     * Expected: outcome='cancelled', final_status='cancelled'.
-     */
-    // const failure = await failJob(cancelRequestedJobId, workerId, leaseToken, stateVersion, 'OPENAI_ERROR', 'errors.job.failed', 'SR-xxx')
-    // expect(failure.outcome).toBe('cancelled')
-    // expect(failure.finalStatus).toBe('cancelled')
+    // Worker encounters an error after cancel was requested.
+    // Expected: outcome=cancelled, finalStatus=cancelled.
+    // fn_fail_job Attempt 1: WHERE state_version = p_state_version+1 AND status='cancel_requested'.
+    // fn_request_job_cancel increments state_version by 1, satisfying this predicate.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-fail-cancel')
+    // Use fn_request_job_cancel (authenticated RPC) — direct table writes are revoked.
+    await userAClient.rpc('fn_request_job_cancel', { p_job_id: j.job_id })
+    const result = await fail(j.job_id, 'worker-fail-cancel', c.leaseToken!, c.stateVersion!)
+    expect(result.outcome).toBe('cancelled')
+    expect(result.finalStatus).toBe('cancelled')
   })
 
   // ── CONCURRENT CLAIM SAFETY ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_claim_job: two concurrent claims — only one wins (SKIP LOCKED)', async () => {
-    /**
-     * Two workers race to claim the same queued job (SELECT FOR UPDATE SKIP LOCKED).
-     * Expected: exactly one 'claimed', one 'lost_race' (or 'not_found').
-     * Job ends in 'processing' exactly once. state_version incremented exactly once.
-     */
-    // const [r1, r2] = await Promise.all([claimJob(jobId, 'worker-a'), claimJob(jobId, 'worker-b')])
-    // const claimed = [r1, r2].filter(r => r.outcome === 'claimed')
-    // expect(claimed).toHaveLength(1)
-    // expect(claimed[0].stateVersion).toBe(2)
+    // Two workers race to claim the same queued job (SELECT FOR UPDATE SKIP LOCKED).
+    // Expected: exactly one 'claimed', one 'lost_race'. Job ends in processing exactly once.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const [r1, r2] = await Promise.all([
+      claim(j.job_id, 'worker-concurrent-a'),
+      claim(j.job_id, 'worker-concurrent-b'),
+    ])
+    const outcomes = [r1.outcome, r2.outcome]
+    expect(outcomes.filter(o => o === 'claimed')).toHaveLength(1)
+    const winner = r1.outcome === 'claimed' ? r1 : r2
+    expect(winner.stateVersion).toBe(2)
   })
 
   // ── STALE RECOVERY ──
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_recover_stale_jobs: stale processing within attempts → requeued', async () => {
-    // const recovery = await recoverStaleJobs()
-    // expect(recovery.requeued).toBeGreaterThanOrEqual(1)
-    // const job = await getJobSafeDto(staleJobId)
-    // expect(job?.status).toBe('queued')
+    // Build via state-machine path: enqueue → claim → pg UPDATE lease_expires_at (stale simulation)
+    // attempt_count=1 (set by fn_claim_job); max_attempts=3 via pg UPDATE → within budget → requeue
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-stale-requeue')
+    expect(c.outcome).toBe('claimed')
+    await pgPool.query(
+      `UPDATE public.generation_jobs SET lease_expires_at = $2, max_attempts = 3 WHERE id = $1`,
+      [j.job_id, new Date(Date.now() - 120_000).toISOString()],
+    )
+    const { data, error } = await serviceClient.rpc('fn_recover_stale_jobs')
+    expect(error).toBeNull()
+    const recovery = data as { requeued: number; cancelled: number; permanently_failed: number }
+    expect(recovery.requeued).toBeGreaterThanOrEqual(1)
+    expect(await getJobStatus(j.job_id)).toBe('queued')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB] fn_recover_stale_jobs: stale cancel_requested → cancelled (cancel wins, never requeued)', async () => {
-    /**
-     * cancel_requested stale jobs must become 'cancelled', not 'queued'.
-     * Recovery must not allow cancel to be undone.
-     */
-    // const recovery = await recoverStaleJobs()
-    // expect(recovery.cancelled).toBeGreaterThanOrEqual(1)
-    // const job = await getJobSafeDto(staleJobId)
-    // expect(job?.status).toBe('cancelled')
+    // cancel_requested stale jobs must become cancelled, not queued (cancel wins invariant D1).
+    // Build via state-machine path: enqueue → claim → fn_request_job_cancel → pg UPDATE lease_expires_at
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    const c = await claim(j.job_id, 'worker-stale-cancel')
+    expect(c.outcome).toBe('claimed')
+    await userAClient.rpc('fn_request_job_cancel', { p_job_id: j.job_id })
+    await pgPool.query(
+      `UPDATE public.generation_jobs SET lease_expires_at = $2, max_attempts = 3 WHERE id = $1`,
+      [j.job_id, new Date(Date.now() - 120_000).toISOString()],
+    )
+    const { data, error } = await serviceClient.rpc('fn_recover_stale_jobs')
+    expect(error).toBeNull()
+    const recovery = data as { cancelled: number; requeued: number }
+    expect(recovery.cancelled).toBeGreaterThanOrEqual(1)
+    expect(await getJobStatus(j.job_id)).toBe('cancelled')
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB] fn_claim_job: max_attempts_exceeded → permanently failed', async () => {
-    // const claim = await claimJob(maxAttemptsJobId, 'worker-x')
-    // expect(claim.outcome).toBe('max_attempts_exceeded')
-    // expect(claim.leaseToken).toBeNull()
+  test.skipIf(NOT_EXECUTED)('[DB] fn_claim_job: max_attempts_exceeded → claim refused when attempt_count = max_attempts', async () => {
+    // Job is queued with attempt_count = max_attempts (not yet claimed).
+    // fn_claim_job checks attempt_count >= max_attempts BEFORE claiming → max_attempts_exceeded.
+    // Build via state-machine path: enqueue (queued, attempt_count=0) → pg UPDATE attempt_count=max_attempts=3
+    // No fn_recover_stale_jobs needed: job never enters processing.
+    const docId = await makeDoc(userAId)
+    const j = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId })
+    await pgPool.query(
+      `UPDATE public.generation_jobs SET attempt_count = 3, max_attempts = 3 WHERE id = $1`,
+      [j.job_id],
+    )
+    const result = await claim(j.job_id, 'worker-max-attempts')
+    expect(result.outcome).toBe('max_attempts_exceeded')
+    expect(result.leaseToken).toBeNull()
   })
 
   // ── SECURITY: worker RPCs inaccessible to authenticated role ──
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] authenticated cannot execute fn_claim_job', async () => {
-    // const { error } = await userClient.rpc('fn_claim_job', { p_job_id: testJobId, p_worker_id: 'x', p_lease_duration_seconds: 90 })
-    // expect(error?.code).toMatch(/42501|403/)
+    const fakeId = randomUUID()
+    const { error } = await userAClient.rpc('fn_claim_job', {
+      p_job_id: fakeId, p_worker_id: 'x', p_lease_duration_seconds: 90,
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] authenticated cannot execute fn_heartbeat_job', async () => {
-    // const { error } = await userClient.rpc('fn_heartbeat_job', { p_job_id: testJobId, p_worker_id: 'x', p_lease_token: 'y', p_state_version: 1 })
-    // expect(error?.code).toMatch(/42501|403/)
+    const fakeId = randomUUID()
+    const { error } = await userAClient.rpc('fn_heartbeat_job', {
+      p_job_id: fakeId, p_worker_id: 'x', p_lease_token: randomUUID(), p_state_version: 1, p_lease_duration_seconds: 90,
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] authenticated cannot execute fn_complete_and_publish_job', async () => {
-    // const { error } = await userClient.rpc('fn_complete_and_publish_job', { p_job_id: testJobId, p_worker_id: 'x', p_lease_token: 'y', p_state_version: 1, p_visuals: [], p_model: 'm' })
-    // expect(error?.code).toMatch(/42501|403/)
+    const fakeId = randomUUID()
+    const { error } = await userAClient.rpc('fn_complete_and_publish_job', {
+      p_job_id: fakeId, p_worker_id: 'x', p_lease_token: randomUUID(),
+      p_state_version: 1, p_visuals: [], p_model: 'm', p_result_code: null,
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] authenticated cannot execute fn_fail_job', async () => {
-    // const { error } = await userClient.rpc('fn_fail_job', { p_job_id: testJobId, p_worker_id: 'x', p_lease_token: 'y', p_state_version: 1, p_error_code: 'E', p_message_key: 'k', p_support_reference: 's' })
-    // expect(error?.code).toMatch(/42501|403/)
+    const fakeId = randomUUID()
+    const { error } = await userAClient.rpc('fn_fail_job', {
+      p_job_id: fakeId, p_worker_id: 'x', p_lease_token: randomUUID(),
+      p_state_version: 1, p_error_code: 'E', p_message_key: 'k', p_support_reference: 'SR-0',
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] authenticated cannot execute fn_recover_stale_jobs', async () => {
-    // const { error } = await userClient.rpc('fn_recover_stale_jobs')
-    // expect(error?.code).toMatch(/42501|403/)
+    const { error } = await userAClient.rpc('fn_recover_stale_jobs')
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   // ── CROSS-USER ISOLATION ──
 
   test.skipIf(NOT_EXECUTED)('[DB SECURITY] fn_get_job_safe_dto: user A cannot read user B job', async () => {
-    /**
-     * User B owns job J. User A calls fn_get_job_safe_dto(J).
-     * Expected: returns null (auth.uid() ownership check fails inside SECURITY DEFINER function).
-     * Validates: no cross-user job data leak via the safe read RPC.
-     */
-    // const { data } = await userAClient.rpc('fn_get_job_safe_dto', { p_job_id: userBJobId })
-    // expect(data).toBeNull()
+    // User B owns job J. User A calls fn_get_job_safe_dto(J).
+    // Expected: returns null (auth.uid() ownership check fails inside SECURITY DEFINER function).
+    const docB = await makeDoc(userBId)
+    const jobB = await enqueueJob({ client: userBClient, userId: userBId, documentId: docB })
+    const { data } = await userAClient.rpc('fn_get_job_safe_dto', { p_job_id: jobB.job_id })
+    expect(data).toBeNull()
   })
 
-  // ── REQUEST LEDGER (migration 20260729120003) ─────────────────────────────
-  // These tests require migration 20260729120003 applied on top of 20260729120001.
-  // Together they validate the durable request-idempotency ledger that closes the
+  // ── REQUEST LEDGER (migration 20260729120001) ─────────────────────────────
+  // The durable request-idempotency ledger (generation_job_requests) is part of
+  // migration 20260729120001. These tests validate that the ledger closes the
   // tab-isolation gap: K2 is durably bound even when D2 exclusion fires.
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER] K1 creates J; K2 arrives while J active → K2 durably bound to J in ledger', async () => {
-    /**
-     * User A submits K1 → J created (status: queued). K1 stored in ledger.
-     * User A submits K2 (different UUID, same document/type, same hash) while J is active.
-     * Expected:
-     *   - fn_enqueue_job returns job_id = J, is_existing = true
-     *   - generation_job_requests contains a row: (user_id, K2_scoped) → J
-     *   - K2 and K1 are distinct entries in the ledger, both pointing to J
-     * Validates: D2 path durably records the new key in the same transaction.
-     */
-    // const k1Scoped = `${userAId}:${crypto.randomUUID()}`
-    // const k2Scoped = `${userAId}:${crypto.randomUUID()}`
-    // const { data: r1 } = await userAClient.rpc('fn_enqueue_job', { p_document_id: docId, p_job_type: 'visuals', p_idempotency_key: k1Scoped, p_payload_hash: hashA, p_sanitized_input: {} })
-    // expect(r1.is_existing).toBe(false)
-    // const jobId = r1.job_id
-    //
-    // const { data: r2 } = await userAClient.rpc('fn_enqueue_job', { p_document_id: docId, p_job_type: 'visuals', p_idempotency_key: k2Scoped, p_payload_hash: hashA, p_sanitized_input: {} })
-    // expect(r2.job_id).toBe(jobId)
-    // expect(r2.is_existing).toBe(true)
-    //
-    // const { data: ledgerRows } = await serviceClient.from('generation_job_requests').select().eq('job_id', jobId)
-    // expect(ledgerRows).toHaveLength(2)
-    // const keys = ledgerRows!.map((r: { request_idempotency_key: string }) => r.request_idempotency_key)
-    // expect(keys).toContain(k1Scoped)
-    // expect(keys).toContain(k2Scoped)
+    // User A submits K1 → J created. K2 (different UUID, same doc/type) arrives while J active.
+    // Expected: K2 returns J (is_existing=true); ledger has both K1 and K2 → J.
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const k2 = makeScopedIdempotencyKey(userAId)
+    const r1 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    expect(r1.is_existing).toBe(false)
+    const r2 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    expect(r2.job_id).toBe(r1.job_id)
+    expect(r2.is_existing).toBe(true)
+    // Ledger reads require pg pool — service_role is revoked from generation_job_requests.
+    const keys = await getLedgerKeys(r1.job_id)
+    expect(keys).toContain(k1)
+    expect(keys).toContain(k2)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER] K2 response lost; J becomes terminal; retrying K2 returns J, no new job', async () => {
-    /**
-     * K1 → Job J (queued). K2 D2 binds to J. J is worker-completed (terminal).
-     * K2 is retried after J is terminal.
-     * Expected:
-     *   - fn_enqueue_job for K2 hits Step 1 (ledger lookup) and returns J directly
-     *   - is_existing = true, status = 'completed' (or the terminal status)
-     *   - No new job is created (generation_jobs count for user/doc/type remains 1)
-     * This is the core correctness test for migration 20260729120003.
-     */
-    // const k1Scoped = `${userAId}:${crypto.randomUUID()}`
-    // const k2Scoped = `${userAId}:${crypto.randomUUID()}`
-    // Setup: K1 creates J
-    // const { data: r1 } = await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: k1Scoped, ... })
-    // const jobId = r1.job_id
-    // Setup: K2 binds to J
-    // await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: k2Scoped, ... })
-    // Setup: worker claims J and completes it
-    // const claim = await claimJob(jobId, 'test-worker-1')
-    // await completeAndPublishJob(jobId, 'test-worker-1', claim.leaseToken!, claim.stateVersion!, [], 'model')
-    //
-    // Act: retry K2 after J is terminal
-    // const { data: r3 } = await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: k2Scoped, ... })
-    // expect(r3.job_id).toBe(jobId)
-    // expect(r3.is_existing).toBe(true)
-    // expect(r3.status).toBe('completed')
-    // const { count } = await serviceClient.from('generation_jobs').select('*', { count: 'exact' }).eq('user_id', userAId).eq('document_id', docId)
-    // expect(count).toBe(1)
+    // K1 → J. K2 D2-binds to J. J is completed (terminal). K2 retried after terminal.
+    // Expected: fn_enqueue_job for K2 returns J (is_existing=true, status=completed).
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const k2 = makeScopedIdempotencyKey(userAId)
+    const r1 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    const c = await claim(r1.job_id, 'worker-ledger-complete')
+    await completeAndPublish(r1.job_id, 'worker-ledger-complete', c.leaseToken!, c.stateVersion!, [])
+    const r3 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    expect(r3.job_id).toBe(r1.job_id)
+    expect(r3.is_existing).toBe(true)
+    expect(r3.status).toBe('completed')
+    // Job count via pg pool — service_role is revoked from generation_jobs.
+    expect(await countJobsForDoc(userAId, docId)).toBe(1)
   })
 
-  test.skipIf(NOT_EXECUTED)('[DB LEDGER] K2 with different payload while J active → P0004 IDEMPOTENCY_PAYLOAD_CONFLICT', async () => {
-    /**
-     * K2 is in the ledger (bound to active J) with hashA.
-     * A retry sends K2 with hashB (different payload).
-     * Expected: fn_enqueue_job returns P0004 IDEMPOTENCY_PAYLOAD_CONFLICT.
-     * Validates: payload conflict detection applies to D2-bound keys, not just originating keys.
-     */
-    // K1 creates J with hashA. K2 binds to J with hashA.
-    // const { error } = await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: k2Scoped, p_payload_hash: hashB, ... })
-    // expect(error?.code).toBe('P0004')
+  test.skipIf(NOT_EXECUTED)('[DB LEDGER] K2 with different document while J active → P0004 IDEMPOTENCY_PAYLOAD_CONFLICT', async () => {
+    // K2 is ledger-bound to J (active on docA). Retry sends K2 for docB (different intent).
+    // Expected: P0004 conflict — ledger has K2→docA; docB is a different document_id.
+    // Note: all v1 types require p_sanitized_input={}; conflict must use different document_id.
+    const docA = await makeDoc(userAId)
+    const docB = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const k2 = makeScopedIdempotencyKey(userAId)
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docA, key: k1 })
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docA, key: k2 })
+    const { error } = await userAClient.rpc('fn_enqueue_job', {
+      p_document_id: docB, p_job_type: 'visuals',
+      p_idempotency_key: k2, p_sanitized_input: {},
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe('P0004')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER] ledger binding preserved after job becomes completed', async () => {
-    /**
-     * K1 creates J. K2 D2-binds to J. J completes.
-     * Verify the ledger still has both K1→J and K2→J after completion.
-     * Expected: two ledger rows, job status = 'completed'.
-     * Validates: terminal jobs retain their ledger entries permanently.
-     */
-    // const { data: rows } = await serviceClient.from('generation_job_requests').select().eq('job_id', jobId)
-    // expect(rows).toHaveLength(2)
-    // const { data: job } = await serviceClient.from('generation_jobs').select('status').eq('id', jobId).single()
-    // expect(job.status).toBe('completed')
+    // K1 creates J, K2 D2-binds to J, J completes.
+    // Expected: ledger still has K1→J and K2→J; job status=completed.
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const k2 = makeScopedIdempotencyKey(userAId)
+    const r1 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k2 })
+    const c = await claim(r1.job_id, 'worker-ledger-persist')
+    await completeAndPublish(r1.job_id, 'worker-ledger-persist', c.leaseToken!, c.stateVersion!, [])
+    // Ledger and job reads via pg pool — service_role is revoked from both tables.
+    const ledgerKeys = await getLedgerKeys(r1.job_id)
+    expect(ledgerKeys.length).toBeGreaterThanOrEqual(2)
+    expect(await getJobStatus(r1.job_id)).toBe('completed')
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER] K_new with new key after J terminal → creates J2 (intentional regeneration)', async () => {
-    /**
-     * J is terminal. K_new is a fresh UUID (not in the ledger).
-     * Expected: fn_enqueue_job creates J2 (new job, status queued), K_new bound to J2.
-     * Validates: terminal status does NOT block new jobs — only the ledger blocks.
-     */
-    // const kNew = `${userAId}:${crypto.randomUUID()}`
-    // const { data: r } = await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: kNew, p_payload_hash: hashA, ... })
-    // expect(r.is_existing).toBe(false)
-    // expect(r.status).toBe('queued')
-    // expect(r.job_id).not.toBe(jobId) // different from J
-    // const { data: ledger } = await serviceClient.from('generation_job_requests').select().eq('request_idempotency_key', kNew)
-    // expect(ledger).toHaveLength(1)
-    // expect(ledger![0].job_id).toBe(r.job_id)
+    // J is terminal. K_new is a fresh UUID (not in the ledger).
+    // Expected: creates J2 (new job, status queued).
+    const docId = await makeDoc(userAId)
+    const k1 = makeScopedIdempotencyKey(userAId)
+    const r1 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: k1 })
+    const c = await claim(r1.job_id, 'worker-ledger-regen')
+    await completeAndPublish(r1.job_id, 'worker-ledger-regen', c.leaseToken!, c.stateVersion!, [])
+    const kNew = makeScopedIdempotencyKey(userAId)
+    const r2 = await enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: kNew })
+    expect(r2.is_existing).toBe(false)
+    expect(r2.status).toBe('queued')
+    expect(r2.job_id).not.toBe(r1.job_id)
+    // Ledger read via pg pool — service_role is revoked from generation_job_requests.
+    const boundJobId = await getLedgerJobIdForKey(kNew)
+    expect(boundJobId).toBe(r2.job_id)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER] concurrent new keys, no active job → both bound to one job', async () => {
-    /**
-     * K_a and K_b arrive concurrently with no active job for (user, doc, type).
-     * Database D2 index ensures only one job is created; the losing INSERT hits
-     * unique_violation and binds its key to the winning job.
-     * Expected:
-     *   - Exactly one row in generation_jobs for the user/doc/type
-     *   - Two rows in generation_job_requests, both pointing to the same job_id
-     * Validates: Step 3 concurrent-insert race produces exactly one job + two ledger entries.
-     * (Requires two concurrent DB connections — use Promise.all or pg advisory locks in test setup.)
-     */
-    // const kA = `${userAId}:${crypto.randomUUID()}`
-    // const kB = `${userAId}:${crypto.randomUUID()}`
-    // const [rA, rB] = await Promise.all([
-    //   userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: kA, ... }),
-    //   userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: kB, ... }),
-    // ])
-    // expect(rA.data?.job_id).toBe(rB.data?.job_id)
-    // const { count } = await serviceClient.from('generation_jobs').select('*', { count: 'exact' }).eq('user_id', userAId).eq('document_id', docId).in('status', ['queued', 'processing', 'cancel_requested'])
-    // expect(count).toBe(1)
-    // const { data: ledger } = await serviceClient.from('generation_job_requests').select().eq('job_id', rA.data.job_id)
-    // expect(ledger).toHaveLength(2)
+    // K_a and K_b arrive concurrently with no active job.
+    // Expected: exactly one job in generation_jobs; two ledger rows pointing to same job.
+    const docId = await makeDoc(userAId)
+    const kA = makeScopedIdempotencyKey(userAId)
+    const kB = makeScopedIdempotencyKey(userAId)
+    const [rA, rB] = await Promise.all([
+      enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: kA }),
+      enqueueJob({ client: userAClient, userId: userAId, documentId: docId, key: kB }),
+    ])
+    expect(rA.job_id).toBe(rB.job_id)
+    // Generation_jobs count and ledger reads via pg pool — service_role is revoked from both tables.
+    expect(await countActiveJobs(userAId, docId)).toBe(1)
+    const ledgerKeys = await getLedgerKeys(rA.job_id)
+    expect(ledgerKeys.length).toBeGreaterThanOrEqual(2)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER SECURITY] authenticated user cannot SELECT from generation_job_requests', async () => {
-    /**
-     * Authenticated user A attempts a direct SELECT on generation_job_requests.
-     * Expected: permission denied (REVOKE ALL from authenticated was applied in migration 20260729120003).
-     * Validates: ledger is not readable via direct table access.
-     */
-    // const { error } = await userAClient.from('generation_job_requests').select('*').limit(1)
-    // expect(error?.code).toMatch(/42501|PGRST301/)
+    // Authenticated user A attempts direct SELECT on generation_job_requests.
+    // Expected: permission denied.
+    const { error } = await userAClient.from('generation_job_requests').select('*').limit(1)
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER SECURITY] authenticated user cannot INSERT into generation_job_requests', async () => {
-    /**
-     * Authenticated user A attempts a direct INSERT into generation_job_requests.
-     * Expected: permission denied.
-     * Validates: ledger writes are only possible via SECURITY DEFINER fn_enqueue_job.
-     */
-    // const { error } = await userAClient.from('generation_job_requests').insert({ user_id: userAId, request_idempotency_key: 'test', request_payload_hash: 'a'.repeat(64), job_id: someJobId })
-    // expect(error?.code).toMatch(/42501|PGRST301/)
+    // Authenticated user A attempts direct INSERT into generation_job_requests.
+    // Expected: permission denied — ledger writes only via SECURITY DEFINER fn_enqueue_job.
+    // (The hash value is irrelevant — permission is denied before any data validation.)
+    const { error } = await userAClient.from('generation_job_requests').insert({
+      user_id: userAId, request_idempotency_key: `${userAId}:${randomUUID()}`,
+      request_payload_hash: 'a'.repeat(64), job_id: randomUUID(),
+    })
+    expect(error).not.toBeNull()
+    expect(error?.code).toMatch(/42501|PGRST301/)
   })
 
   test.skipIf(NOT_EXECUTED)('[DB LEDGER SECURITY] cross-user: same bare UUID does not collide across users', async () => {
-    /**
-     * User A and User B each submit the same bare UUID (simulating an attacker reusing
-     * someone else's UUID). The composite scoped key includes userId, so they are distinct.
-     * Expected:
-     *   - User A gets job_a; User B gets job_b; both are different jobs.
-     *   - generation_job_requests has two rows: one per user, both with the same bare UUID
-     *     but different scoped keys, pointing to different jobs.
-     * Validates: the userId prefix in the scoped key provides cross-user isolation.
-     */
-    // const sharedBareUuid = crypto.randomUUID()
-    // const kA = `${userAId}:${sharedBareUuid}`
-    // const kB = `${userBId}:${sharedBareUuid}`
-    // const { data: rA } = await userAClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: kA, ... })
-    // const { data: rB } = await userBClient.rpc('fn_enqueue_job', { ..., p_idempotency_key: kB, ... })
-    // expect(rA.job_id).not.toBe(rB.job_id)
-    // const { data: ledger } = await serviceClient.from('generation_job_requests').select().in('request_idempotency_key', [kA, kB])
-    // expect(ledger).toHaveLength(2)
-    // expect(ledger!.map((r: { job_id: string }) => r.job_id)).not.toContain(expect.arrayContaining([rA.job_id === rB.job_id]))
+    // User A and User B each submit the same bare UUID. Scoped keys include userId prefix.
+    // Expected: User A gets job_a, User B gets job_b — different jobs, no collision.
+    const docA = await makeDoc(userAId)
+    const docB = await makeDoc(userBId)
+    const sharedBareUuid = randomUUID()
+    const kA = `${userAId}:${sharedBareUuid}`
+    const kB = `${userBId}:${sharedBareUuid}`
+    const [rA, rB] = await Promise.all([
+      enqueueJob({ client: userAClient, userId: userAId, documentId: docA, key: kA }),
+      enqueueJob({ client: userBClient, userId: userBId, documentId: docB, key: kB }),
+    ])
+    expect(rA.job_id).not.toBe(rB.job_id)
+    expect(rA.is_existing).toBe(false)
+    expect(rB.is_existing).toBe(false)
   })
 })
 

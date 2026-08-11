@@ -262,6 +262,7 @@ BEGIN
       -- documents (source columns only — complete table may have unrelated columns)
       ('documents','id',         'uuid',        'NO', 'gen_random_uuid()'),
       ('documents','user_id',    'uuid',        'YES',NULL),
+      ('documents','file_path',  'text',        'YES',NULL),
       ('documents','title',      'text',        'NO', NULL),
       ('documents','extracted_text','text',     'YES',NULL),
       ('documents','file_type',  'text',        'YES',NULL),
@@ -771,10 +772,10 @@ BEGIN
 
   -- R13-H02: documents exact baseline column count.
   -- The source column check above is list-based; this count blocks silent extra columns.
-  -- Confirmed: 9 columns from d11-catalogue-results-2026-07-31.csv (S2_columns).
+  -- Confirmed: 10 columns from d11-catalogue-results-2026-07-31.csv (S2_columns).
   IF (SELECT count(*) FROM information_schema.columns
-      WHERE table_schema='public' AND table_name='documents') <> 9 THEN
-    RAISE EXCEPTION 'D11 DRIFT: documents must have exactly 9 baseline columns';
+      WHERE table_schema='public' AND table_name='documents') <> 10 THEN
+    RAISE EXCEPTION 'D11 DRIFT: documents must have exactly 10 baseline columns';
   END IF;
 
   -- R13-H02: document_analysis exact baseline column count.

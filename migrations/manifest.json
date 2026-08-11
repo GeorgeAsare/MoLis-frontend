@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "authority": "MoLis repository migration history; never Supabase service migration tables",
-  "generated_at": "2026-08-05",
+  "generated_at": "2026-08-11",
   "sole_authority": true,
-  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated through Round 17 surgical corrections (R17-H01 TABLE default ACL contradiction resolved; R17-H02 post-upload providerSignal.throwIfAborted() check added, upload catch rethrows AbortError/TimeoutError, explicit AbortController+clearTimeout replaces AbortSignal.timeout() for providerTimer/textTimer/downloadTimer; R17-H03 FUNCTION default ACL now requires exactly one row via bidirectional EXCEPT ALL equality — grantor=postgres, grantee=postgres, privilege_type=EXECUTE, is_grantable=false — missing or extra rows both rejected; SEQUENCE ACL proof unchanged; R17-M01 NFC/NFD canonical text assertions; R17-M02 real zlib IDAT, remove indexed colour type).",
+  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated 2026-08-11 for FOCUSED REJECT correction: added file_path column to R10-H04 documents source-column list (D11 ordinal 4, text, nullable); updated R13-H02 documents exact column count from 9 to 10. Prior Round 17 corrections remain: R17-H01 TABLE default ACL; R17-H02 post-upload deadline checks; R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL; R17-M01/M02 PNG/canonical text.",
   "execution_evidence": {
     "database_execution_exists": false,
     "storage_execution_exists": false,
@@ -25,8 +25,8 @@
     {
       "order": 2,
       "filename": "20260729120001_generation_job_state_machine_schema.sql",
-      "sha256": "94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d",
-      "sha256_note": "Computed 2026-08-05 after Round 17 surgical corrections (R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL proof requiring exactly one postgres/postgres/EXECUTE/false row; R17-H02 post-upload providerSignal check + AbortError/TimeoutError rethrow in upload catch + explicit AbortController+clearTimeout for all deadline timers; static index assertions expanded with indisunique/indisprimary/indispartial/indpred property clauses for all eight source-table indexes; PNG fixtures use content-valid makePngBuffer(0) for all positive tests; fixture self-validation describe block added). Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
+      "sha256": "12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404",
+      "sha256_note": "Computed 2026-08-11 after FOCUSED REJECT correction: added ('documents','file_path','text','YES',NULL) to R10-H04 source-column check and changed R13-H02 documents column count from 9 to 10. D11 S2_columns confirmed file_path at ordinal 4 (between user_id and title). Prior checksum 94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d was from Round 17. Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
       "status": "locally_authored_not_executed",
       "execution_evidence": "none",
       "mutable": true,

@@ -10,7 +10,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'validation/**/*.test.ts'],
     // 'server-only' is a Next.js guard that throws in browser bundles.
     // In the Vitest node environment it is safe to treat it as an empty module.
     alias: {

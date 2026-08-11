@@ -1,5 +1,5 @@
 # MoLis Migration Manifest
-<!-- Round 8 item 15 — created 2026-08-01. Updated Round 17: 2026-08-05 -->
+<!-- Round 8 item 15 — created 2026-08-01. Updated Round 17: 2026-08-05. FOCUSED REJECT correction: 2026-08-11 -->
 <!-- DERIVED / INFORMATIONAL ONLY. The sole authoritative source of truth is migrations/manifest.json. -->
 <!-- This file is manually maintained for human readability. Any conflict with migrations/manifest.json -->
 <!-- must be resolved in favour of migrations/manifest.json. Do not treat this file as canonical. -->
@@ -38,7 +38,7 @@ no repository-owned application migration ledger proves when or how this file wa
 | **File** | `migrations/20260729120001_generation_job_state_machine_schema.sql` |
 | **Status** | Locally authored, not yet executed in any environment |
 | **Classification** | Corrective migration — closes the authority gap left by Migration 1 |
-| **SHA-256 checksum** | `94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d` (computed 2026-08-05 after Round 17 surgical corrections — FUNCTION default ACL bidirectional EXCEPT ALL, post-upload deadline check, explicit timer controllers) |
+| **SHA-256 checksum** | `12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404` (computed 2026-08-11 after FOCUSED REJECT: added file_path to R10-H04 documents source-column list; changed R13-H02 documents count from 9 to 10. Prior Round 17 checksum was 94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d) |
 | **Evidence source** | Local static analysis only. No database parser, disposable-execution, or staging evidence exists. |
 | **Execution status** | NOT executed. Requires George's explicit approval and a runbook before any execution. |
 | **Database state dependency** | Requires Migration 1 to have been applied first. The migration's fail-closed preflight will reject execution unless the exact D11 baseline catalogue is present. |
@@ -65,7 +65,7 @@ two of the migrations required for a deterministic fresh-project reproduction.
 
 2. migrations/20260729120001_generation_job_state_machine_schema.sql
    └── Corrective closure. NOT yet executed. Requires George's approval and a runbook.
-       SHA-256: 94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d
+       SHA-256: 12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404
 ```
 
 ---
@@ -102,4 +102,4 @@ two of the migrations required for a deterministic fresh-project reproduction.
 
 ---
 
-*Last updated: 2026-08-05 (Round 17 corrections applied). Authoritative source: migrations/manifest.json. Research/verification date: 2026-08-05.*
+*Last updated: 2026-08-11 (FOCUSED REJECT correction: file_path column added to R10-H04; R13-H02 count 9→10). Authoritative source: migrations/manifest.json. Research/verification date: 2026-08-11.*
