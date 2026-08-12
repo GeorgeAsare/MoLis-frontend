@@ -19,7 +19,12 @@ import { randomUUID } from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { describe, it, expect, test, vi, afterEach, afterAll, beforeAll } from 'vitest'
-import { assertDisposableEnvironment } from '../../../../validation/beta-foundation-v1/guard/productionGuard'
+import {
+  assertDisposableEnvironment,
+  checkLinkedProjectGuard,
+  checkProductionGuard,
+} from '../../../../validation/beta-foundation-v1/guard/productionGuard'
+import { findRepoRoot } from '../../../../validation/beta-foundation-v1/guard/findRepoRoot'
 import {
   createTestUser,
   signInTestUser,
@@ -859,13 +864,19 @@ describe('Phase 2 — Database integration', () => {
         )
       }
 
-      // Guard inspects the FULL env — RUN_DATABASE_TESTS, API URL, and DB URL all required.
-      assertDisposableEnvironment({
-        RUN_DATABASE_TESTS: process.env['RUN_DATABASE_TESTS'] ?? '',
-        SUPABASE_URL:       supabaseUrl,
-        NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
-        DIRECT_URL:         directUrl,
-      })
+      // Guard 0: linked-project filesystem markers (prevents accidental production env)
+      const repoRoot = findRepoRoot(__dirname)
+      const linkedGuard = checkLinkedProjectGuard(repoRoot)
+      if (!linkedGuard.safe) {
+        throw new Error(`[GROUP B] Linked-project guard failed: ${linkedGuard.reason}`)
+      }
+      // Guard 1: full production guard on complete process.env
+      const fullEnvGuard = checkProductionGuard(process.env as Record<string, string | undefined>)
+      if (!fullEnvGuard.safe) {
+        throw new Error(`[GROUP B] Production guard failed: ${fullEnvGuard.reason}`)
+      }
+      // Guard 2: disposable environment check against full process.env
+      assertDisposableEnvironment(process.env as Record<string, string | undefined>)
 
       // Privileged pg pool: postgres superuser, bypasses service_role REVOKE.
       pgPool = makePrivilegedPgClient(directUrl)

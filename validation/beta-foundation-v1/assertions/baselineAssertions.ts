@@ -16,6 +16,42 @@
 //   - Takes a QueryFn — no direct database import or server-only guard here.
 //   - The caller (test setup) provides the pg client's query method.
 
+import {
+  CORRECTIVE_FUNCTIONS,
+  POST_CORRECTIVE_GENERATION_JOBS_INDEXES,
+  POST_CORRECTIVE_NEW_TABLES,
+  POST_CORRECTIVE_STUDY_VISUALS_NEW_COLUMNS,
+  POST_CORRECTIVE_RESTRICTIVE_POLICIES,
+  D11_DOCUMENTS_COLUMNS,
+  D11_DOCUMENT_ANALYSIS_COLUMNS,
+  D11_STUDY_VISUALS_COLUMNS,
+  D11_GENERATION_JOBS_BASELINE_COLUMNS,
+  D11_TRIGGER_FUNCTIONS,
+  D11_TRIGGER_DEPENDANTS,
+  D11_STUDY_VISUALS_STORAGE_POLICY_SPECS,
+  D11_UNRELATED_STORAGE_POLICY_SPECS,
+  D11_PUBLIC_SCHEMA_ACL,
+  D11_DOCUMENTS_FK_BEHAVIOR,
+  CORRECTIVE_ABSENT_DA_CONSTRAINTS,
+  type DefaultAclTuple,
+  type ConstraintSpec,
+  type IndexSpec,
+  type PublicTablePolicySpec,
+  D11_DOCUMENTS_CONSTRAINTS,
+  D11_DOCUMENT_ANALYSIS_CONSTRAINTS,
+  D11_STUDY_VISUALS_CONSTRAINTS,
+  D11_GENERATION_JOBS_CONSTRAINTS,
+  D11_DOCUMENTS_INDEX_SPECS,
+  D11_DOCUMENT_ANALYSIS_INDEX_SPECS,
+  D11_STUDY_VISUALS_INDEX_SPECS,
+  D11_GENERATION_JOBS_BASELINE_INDEX_SPECS,
+  D11_DOCUMENTS_POLICY_SPECS,
+  D11_DOCUMENT_ANALYSIS_POLICY_SPECS,
+  D11_STUDY_VISUALS_POLICY_SPECS,
+  D11_GENERATION_JOBS_BASELINE_POLICY_SPECS,
+  D11_TABLE_ACL_TUPLES,
+} from '../contract/validationContract'
+
 export type QueryFn = (
   sql: string,
   params?: unknown[],
@@ -163,16 +199,7 @@ export async function assertPublicSchemaOwnerAndAcl(query: QueryFn): Promise<voi
      WHERE n.nspname = 'public'
      ORDER BY grantee, privilege_type`,
   )
-  const expectedAcl: AclTuple[] = [
-    { grantee: '',                 privilege_type: 'USAGE',  is_grantable: false },
-    { grantee: 'anon',            privilege_type: 'USAGE',  is_grantable: false },
-    { grantee: 'authenticated',   privilege_type: 'USAGE',  is_grantable: false },
-    { grantee: 'pg_database_owner', privilege_type: 'CREATE', is_grantable: false },
-    { grantee: 'pg_database_owner', privilege_type: 'USAGE',  is_grantable: false },
-    { grantee: 'postgres',        privilege_type: 'USAGE',  is_grantable: false },
-    { grantee: 'service_role',    privilege_type: 'USAGE',  is_grantable: false },
-  ]
-  compareAclTuples(aclRows, expectedAcl, 'public schema nspacl (D11 SA10)')
+  compareAclTuples(aclRows, D11_PUBLIC_SCHEMA_ACL, 'public schema nspacl (D11 SA10)')
 }
 
 // ── 6. Default TABLE ACL — exact bidirectional EXCEPT ALL ─────────────────────
@@ -280,39 +307,23 @@ export async function assertDefaultSequenceAcl(query: QueryFn): Promise<void> {
 
 // ── 9. documents baseline column shape ───────────────────────────────────────
 // D11 S2_columns: exactly 10 columns in exact ordinal order.
-// Ordinal order: id(1), user_id(2), title(3), file_path(4), file_type(5),
-//   extracted_text(6), created_at(7), subject_id(8), source_type(9), source_recording_id(10).
-
-const DOCUMENTS_EXPECTED_COLUMNS: Array<{
-  name: string; ordinal: number; nullable: string; udt: string; default_sql: string | null
-}> = [
-  { name: 'id',                  ordinal: 1,  nullable: 'NO',  udt: 'uuid',        default_sql: 'gen_random_uuid()' },
-  { name: 'user_id',             ordinal: 2,  nullable: 'YES', udt: 'uuid',        default_sql: null },
-  { name: 'title',               ordinal: 3,  nullable: 'NO',  udt: 'text',        default_sql: null },
-  { name: 'file_path',           ordinal: 4,  nullable: 'YES', udt: 'text',        default_sql: null },
-  { name: 'file_type',           ordinal: 5,  nullable: 'YES', udt: 'text',        default_sql: null },
-  { name: 'extracted_text',      ordinal: 6,  nullable: 'YES', udt: 'text',        default_sql: null },
-  { name: 'created_at',          ordinal: 7,  nullable: 'YES', udt: 'timestamptz', default_sql: 'now()' },
-  { name: 'subject_id',          ordinal: 8,  nullable: 'YES', udt: 'uuid',        default_sql: null },
-  { name: 'source_type',         ordinal: 9,  nullable: 'YES', udt: 'text',        default_sql: null },
-  { name: 'source_recording_id', ordinal: 10, nullable: 'YES', udt: 'uuid',        default_sql: null },
-]
+// Canonical fingerprint imported from validationContract.ts (D11_DOCUMENTS_COLUMNS).
 
 export async function assertDocumentsBaselineShape(query: QueryFn): Promise<void> {
   const { rows } = await query(
-    `SELECT column_name, ordinal_position::int AS ordinal, is_nullable, udt_name, column_default
+    `SELECT column_name, ordinal_position::int AS ordinal, data_type, is_nullable, udt_name, column_default
      FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = 'documents'
      ORDER BY ordinal_position`,
   )
-  if (rows.length !== DOCUMENTS_EXPECTED_COLUMNS.length) {
+  if (rows.length !== D11_DOCUMENTS_COLUMNS.length) {
     throw new Error(
-      `[BASELINE] documents has ${rows.length} columns; expected ${DOCUMENTS_EXPECTED_COLUMNS.length}. ` +
+      `[BASELINE] documents has ${rows.length} columns; expected ${D11_DOCUMENTS_COLUMNS.length}. ` +
       `Columns found: ${rows.map(r => r.column_name).join(', ')}. ` +
       `D11 S2_columns confirmed 10-column pre-state.`,
     )
   }
-  for (const exp of DOCUMENTS_EXPECTED_COLUMNS) {
+  for (const exp of D11_DOCUMENTS_COLUMNS) {
     const row = rows.find(r => r.column_name === exp.name)
     if (!row) {
       throw new Error(
@@ -325,16 +336,31 @@ export async function assertDocumentsBaselineShape(query: QueryFn): Promise<void
         `got: ${String(row.ordinal)}. D11 S2_columns confirms exact ordinal.`,
       )
     }
-    if (row.is_nullable !== exp.nullable) {
+    if (row.data_type !== exp.data_type) {
       throw new Error(
-        `[BASELINE] documents.${exp.name} is_nullable expected ${exp.nullable}; ` +
+        `[BASELINE] documents.${exp.name} data_type expected "${exp.data_type}"; ` +
+        `got: "${String(row.data_type)}".`,
+      )
+    }
+    if (row.is_nullable !== exp.is_nullable) {
+      throw new Error(
+        `[BASELINE] documents.${exp.name} is_nullable expected ${exp.is_nullable}; ` +
         `got: ${String(row.is_nullable)}.`,
       )
     }
-    if (row.udt_name !== exp.udt) {
+    if (row.udt_name !== exp.udt_name) {
       throw new Error(
-        `[BASELINE] documents.${exp.name} udt_name expected ${exp.udt}; ` +
+        `[BASELINE] documents.${exp.name} udt_name expected ${exp.udt_name}; ` +
         `got: ${String(row.udt_name)}.`,
+      )
+    }
+    const gotDefault = (row.column_default ?? null) as string | null
+    if (gotDefault !== exp.column_default) {
+      throw new Error(
+        `[BASELINE] documents.${exp.name} column_default expected ` +
+        `${exp.column_default === null ? 'null' : `"${exp.column_default}"`}; ` +
+        `got: ${gotDefault === null ? 'null' : `"${gotDefault}"`}. ` +
+        `D11 S2_columns confirmed this default.`,
       )
     }
   }
@@ -352,49 +378,22 @@ export async function assertDocumentsBaselineShape(query: QueryFn): Promise<void
 
 // ── 10. document_analysis baseline column shape ───────────────────────────────
 // D11 S2_columns: exactly 22 columns in exact ordinal order. No unique(document_id, user_id).
-// Ordinal 15 is created_at (confirmed by D11 — different from alphabetical listing order).
-
-const DOCUMENT_ANALYSIS_EXPECTED_COLUMNS: Array<{
-  name: string; ordinal: number; nullable: string; udt: string
-}> = [
-  { name: 'id',                      ordinal: 1,  nullable: 'NO',  udt: 'uuid'        },
-  { name: 'document_id',             ordinal: 2,  nullable: 'NO',  udt: 'uuid'        },
-  { name: 'user_id',                 ordinal: 3,  nullable: 'NO',  udt: 'uuid'        },
-  { name: 'subject_area',            ordinal: 4,  nullable: 'NO',  udt: 'text'        },
-  { name: 'difficulty_level',        ordinal: 5,  nullable: 'NO',  udt: 'text'        },
-  { name: 'estimated_study_minutes', ordinal: 6,  nullable: 'YES', udt: 'int4'        },
-  { name: 'sections',                ordinal: 7,  nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'key_concepts',            ordinal: 8,  nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'definitions',             ordinal: 9,  nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'formulas',                ordinal: 10, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'examples',                ordinal: 11, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'keywords',                ordinal: 12, nullable: 'NO',  udt: '_text'       },
-  { name: 'likely_exam_topics',      ordinal: 13, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'model',                   ordinal: 14, nullable: 'NO',  udt: 'text'        },
-  { name: 'created_at',              ordinal: 15, nullable: 'NO',  udt: 'timestamptz' },
-  { name: 'learning_objectives',     ordinal: 16, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'misconceptions',          ordinal: 17, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'relationships',           ordinal: 18, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'prerequisites',           ordinal: 19, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'tables',                  ordinal: 20, nullable: 'NO',  udt: 'jsonb'       },
-  { name: 'concept_graph',           ordinal: 21, nullable: 'YES', udt: 'jsonb'       },
-  { name: 'learning_path',           ordinal: 22, nullable: 'YES', udt: 'jsonb'       },
-]
+// Canonical fingerprint imported from validationContract.ts (D11_DOCUMENT_ANALYSIS_COLUMNS).
 
 export async function assertDocumentAnalysisBaselineShape(query: QueryFn): Promise<void> {
   const { rows } = await query(
-    `SELECT column_name, ordinal_position::int AS ordinal, is_nullable, udt_name
+    `SELECT column_name, ordinal_position::int AS ordinal, data_type, is_nullable, udt_name, column_default
      FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = 'document_analysis'
      ORDER BY ordinal_position`,
   )
-  if (rows.length !== DOCUMENT_ANALYSIS_EXPECTED_COLUMNS.length) {
+  if (rows.length !== D11_DOCUMENT_ANALYSIS_COLUMNS.length) {
     throw new Error(
-      `[BASELINE] document_analysis has ${rows.length} columns; expected 22. ` +
+      `[BASELINE] document_analysis has ${rows.length} columns; expected ${D11_DOCUMENT_ANALYSIS_COLUMNS.length}. ` +
       `Columns found: ${rows.map(r => r.column_name).join(', ')}`,
     )
   }
-  for (const exp of DOCUMENT_ANALYSIS_EXPECTED_COLUMNS) {
+  for (const exp of D11_DOCUMENT_ANALYSIS_COLUMNS) {
     const row = rows.find(r => r.column_name === exp.name)
     if (!row) {
       throw new Error(
@@ -407,16 +406,31 @@ export async function assertDocumentAnalysisBaselineShape(query: QueryFn): Promi
         `got: ${String(row.ordinal)}. D11 S2_columns confirms exact ordinal.`,
       )
     }
-    if (row.is_nullable !== exp.nullable) {
+    if (row.data_type !== exp.data_type) {
       throw new Error(
-        `[BASELINE] document_analysis.${exp.name} is_nullable expected ${exp.nullable}; ` +
+        `[BASELINE] document_analysis.${exp.name} data_type expected "${exp.data_type}"; ` +
+        `got: "${String(row.data_type)}".`,
+      )
+    }
+    if (row.is_nullable !== exp.is_nullable) {
+      throw new Error(
+        `[BASELINE] document_analysis.${exp.name} is_nullable expected ${exp.is_nullable}; ` +
         `got: ${String(row.is_nullable)}.`,
       )
     }
-    if (row.udt_name !== exp.udt) {
+    if (row.udt_name !== exp.udt_name) {
       throw new Error(
-        `[BASELINE] document_analysis.${exp.name} udt_name expected ${exp.udt}; ` +
+        `[BASELINE] document_analysis.${exp.name} udt_name expected ${exp.udt_name}; ` +
         `got: ${String(row.udt_name)}.`,
+      )
+    }
+    const gotDefault = (row.column_default ?? null) as string | null
+    if (gotDefault !== exp.column_default) {
+      throw new Error(
+        `[BASELINE] document_analysis.${exp.name} column_default expected ` +
+        `${exp.column_default === null ? 'null' : `"${exp.column_default}"`}; ` +
+        `got: ${gotDefault === null ? 'null' : `"${gotDefault}"`}. ` +
+        `D11 S2_columns confirmed this default.`,
       )
     }
   }
@@ -446,30 +460,23 @@ export async function assertDocumentsFkDeleteBehavior(query: QueryFn): Promise<v
      FROM pg_constraint
      WHERE conrelid = 'public.documents'::regclass AND contype = 'f'`,
   )
-  // confdeltype / confupdtype: 'a'=NO ACTION, 'c'=CASCADE, 'n'=SET NULL, 'r'=RESTRICT, 'd'=SET DEFAULT
-  type FkExpected = { del: string; upd: string }
   const fkMap = new Map(rows.map(r => [
     r.conname as string,
     { del: r.confdeltype as string, upd: r.confupdtype as string },
   ]))
-  const expected: [string, FkExpected][] = [
-    ['documents_user_id_fkey',             { del: 'c', upd: 'a' }], // CASCADE, NO ACTION
-    ['documents_subject_id_fkey',          { del: 'n', upd: 'a' }], // SET NULL, NO ACTION
-    ['documents_source_recording_id_fkey', { del: 'n', upd: 'a' }], // SET NULL, NO ACTION
-  ]
-  for (const [name, exp] of expected) {
-    if (!fkMap.has(name)) {
-      throw new Error(`[BASELINE] documents FK ${name} not found. D11 confirms this FK.`)
+  for (const exp of D11_DOCUMENTS_FK_BEHAVIOR) {
+    if (!fkMap.has(exp.conname)) {
+      throw new Error(`[BASELINE] documents FK ${exp.conname} not found. D11 confirms this FK.`)
     }
-    const got = fkMap.get(name)!
-    if (got.del !== exp.del) {
+    const got = fkMap.get(exp.conname)!
+    if (got.del !== exp.confdeltype) {
       throw new Error(
-        `[BASELINE] documents FK ${name} confdeltype expected "${exp.del}"; got "${got.del}".`,
+        `[BASELINE] documents FK ${exp.conname} confdeltype expected "${exp.confdeltype}"; got "${got.del}".`,
       )
     }
-    if (got.upd !== exp.upd) {
+    if (got.upd !== exp.confupdtype) {
       throw new Error(
-        `[BASELINE] documents FK ${name} confupdtype expected "${exp.upd}"; got "${got.upd}".`,
+        `[BASELINE] documents FK ${exp.conname} confupdtype expected "${exp.confupdtype}"; got "${got.upd}".`,
       )
     }
   }
@@ -477,33 +484,62 @@ export async function assertDocumentsFkDeleteBehavior(query: QueryFn): Promise<v
 
 // ── 12. study_visuals baseline column shape ───────────────────────────────────
 // D11 S24_study_visuals_columns: exactly 6 columns.
-
-const STUDY_VISUALS_EXPECTED_COLUMNS = new Set([
-  'id', 'document_id', 'user_id', 'visuals', 'model', 'created_at',
-])
+// Canonical fingerprint imported from validationContract.ts (D11_STUDY_VISUALS_COLUMNS).
+// Queries udt_name (not data_type) to match the contract's udt_name field.
 
 export async function assertStudyVisualsBaselineShape(query: QueryFn): Promise<void> {
   const { rows } = await query(
-    `SELECT column_name
+    `SELECT
+       ordinal_position::int AS ordinal,
+       column_name           AS name,
+       data_type,
+       udt_name,
+       is_nullable,
+       column_default
      FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = 'study_visuals'
      ORDER BY ordinal_position`,
   )
-  const colNames = new Set(rows.map(r => r.column_name as string))
-
-  for (const expected of STUDY_VISUALS_EXPECTED_COLUMNS) {
-    if (!colNames.has(expected)) {
+  if (rows.length !== D11_STUDY_VISUALS_COLUMNS.length) {
+    throw new Error(
+      `[BASELINE] study_visuals has ${rows.length} columns; expected ${D11_STUDY_VISUALS_COLUMNS.length}. ` +
+      `D11 S24 confirmed 6-column pre-state. ` +
+      `Columns found: ${rows.map(r => r.name).join(', ')}`,
+    )
+  }
+  for (let i = 0; i < D11_STUDY_VISUALS_COLUMNS.length; i++) {
+    const exp = D11_STUDY_VISUALS_COLUMNS[i]!
+    const got = rows[i]!
+    const gotOrdinal = typeof got.ordinal === 'string' ? parseInt(got.ordinal, 10) : Number(got.ordinal)
+    if (gotOrdinal !== exp.ordinal || got.name !== exp.name) {
       throw new Error(
-        `[BASELINE] study_visuals missing expected column: ${expected}. ` +
-        `D11 S24 confirmed 6-column pre-state.`,
+        `[BASELINE] study_visuals column at ordinal ${exp.ordinal}: ` +
+        `expected name="${exp.name}"; got name="${String(got.name)}" (ordinal ${gotOrdinal}).`,
       )
     }
-  }
-  if (colNames.size !== STUDY_VISUALS_EXPECTED_COLUMNS.size) {
-    throw new Error(
-      `[BASELINE] study_visuals has ${colNames.size} columns; expected 6. ` +
-      `Columns found: ${[...colNames].join(', ')}`,
-    )
+    if (got.data_type !== exp.data_type) {
+      throw new Error(
+        `[BASELINE] study_visuals.${exp.name} data_type expected "${exp.data_type}"; got "${String(got.data_type)}".`,
+      )
+    }
+    if (got.udt_name !== exp.udt_name) {
+      throw new Error(
+        `[BASELINE] study_visuals.${exp.name} udt_name expected "${exp.udt_name}"; got "${String(got.udt_name)}".`,
+      )
+    }
+    if (got.is_nullable !== exp.is_nullable) {
+      throw new Error(
+        `[BASELINE] study_visuals.${exp.name} is_nullable expected "${exp.is_nullable}"; got "${String(got.is_nullable)}".`,
+      )
+    }
+    const gotDefault = (got.column_default ?? null) as string | null
+    if (gotDefault !== exp.column_default) {
+      throw new Error(
+        `[BASELINE] study_visuals.${exp.name} column_default expected ` +
+        `${exp.column_default === null ? 'null' : `"${exp.column_default}"`}; ` +
+        `got: ${gotDefault === null ? 'null' : `"${gotDefault}"`}.`,
+      )
+    }
   }
 }
 
@@ -559,42 +595,11 @@ export async function assertRlsEnabledOnPreMigrationTables(query: QueryFn): Prom
 // D11 S11: one permissive FOR ALL TO public with USING and WITH CHECK.
 
 export async function assertStudyVisualsBaselinePolicy(query: QueryFn): Promise<void> {
-  const { rows } = await query(
-    `SELECT policyname, cmd, permissive, roles::text AS roles, qual, with_check
-     FROM pg_policies
-     WHERE schemaname = 'public' AND tablename = 'study_visuals'`,
-  )
-  if (rows.length !== 1) {
-    throw new Error(
-      `[BASELINE] study_visuals expected exactly 1 RLS policy; found ${rows.length}. ` +
-      `D11 S11 confirmed only "study_visuals_owner_all".`,
-    )
-  }
-  const p = rows[0]
-  if (p?.policyname !== 'study_visuals_owner_all') {
-    throw new Error(
-      `[BASELINE] study_visuals policy name expected "study_visuals_owner_all"; ` +
-      `got: ${String(p?.policyname)}`,
-    )
-  }
-  if (p?.cmd !== 'ALL') {
-    throw new Error(`[BASELINE] study_visuals policy cmd expected ALL; got: ${String(p?.cmd)}`)
-  }
-  if (p?.permissive !== 'PERMISSIVE') {
-    throw new Error(`[BASELINE] study_visuals policy permissive expected PERMISSIVE; got: ${String(p?.permissive)}`)
-  }
+  await _assertTablePolicies(query, 'study_visuals', D11_STUDY_VISUALS_POLICY_SPECS, 'BASELINE')
 }
 
 // ── 16. Five trigger functions present ───────────────────────────────────────
 // D11 SA01: exactly 5 public routines, all trigger functions owned by postgres.
-
-const EXPECTED_TRIGGER_FUNCTIONS = new Set([
-  'validate_resource_subject_ownership',
-  'set_subjects_updated_at',
-  'set_user_profiles_updated_at',
-  'sync_user_profiles_identity',
-  'update_updated_at',
-])
 
 export async function assertTriggerFunctions(query: QueryFn): Promise<void> {
   const { rows } = await query(
@@ -605,8 +610,9 @@ export async function assertTriggerFunctions(query: QueryFn): Promise<void> {
        AND p.prorettype = 'trigger'::regtype`,
   )
   const found = new Set(rows.map(r => r.proname as string))
+  const expected = new Set(D11_TRIGGER_FUNCTIONS)
 
-  for (const fn of EXPECTED_TRIGGER_FUNCTIONS) {
+  for (const fn of expected) {
     if (!found.has(fn)) {
       throw new Error(
         `[BASELINE] Trigger function public.${fn} not found. ` +
@@ -614,9 +620,9 @@ export async function assertTriggerFunctions(query: QueryFn): Promise<void> {
       )
     }
   }
-  if (found.size !== EXPECTED_TRIGGER_FUNCTIONS.size) {
+  if (found.size !== expected.size) {
     throw new Error(
-      `[BASELINE] Expected exactly ${EXPECTED_TRIGGER_FUNCTIONS.size} trigger functions; ` +
+      `[BASELINE] Expected exactly ${expected.size} trigger functions; ` +
       `found ${found.size}: ${[...found].join(', ')}.`,
     )
   }
@@ -633,17 +639,7 @@ export async function assertTriggerFunctions(query: QueryFn): Promise<void> {
 //   agent_memories_updated_at on agent_memories (BEFORE UPDATE)
 
 export async function assertAllTriggerDependants(query: QueryFn): Promise<void> {
-  const expected: Array<{ table: string; name: string; events: string[]; timing: string }> = [
-    { table: 'documents',      name: 'validate_document_subject_ownership',  events: ['INSERT','UPDATE'], timing: 'BEFORE' },
-    { table: 'recordings',     name: 'validate_recording_subject_ownership', events: ['INSERT','UPDATE'], timing: 'BEFORE' },
-    { table: 'subjects',       name: 'set_subjects_updated_at',              events: ['UPDATE'],          timing: 'BEFORE' },
-    { table: 'user_profiles',  name: 'set_user_profiles_updated_at',         events: ['UPDATE'],          timing: 'BEFORE' },
-    { table: 'user_profiles',  name: 'sync_user_profiles_identity_trigger',  events: ['INSERT'],          timing: 'BEFORE' },
-    { table: 'user_profiles',  name: 'user_profiles_updated_at',             events: ['UPDATE'],          timing: 'BEFORE' },
-    { table: 'agent_memories', name: 'agent_memories_updated_at',            events: ['UPDATE'],          timing: 'BEFORE' },
-  ]
-
-  for (const t of expected) {
+  for (const t of D11_TRIGGER_DEPENDANTS) {
     const { rows } = await query(
       `SELECT event_manipulation, action_timing, action_orientation
        FROM information_schema.triggers
@@ -732,87 +728,91 @@ export async function assertStudyVisualsStoragePolicies(query: QueryFn): Promise
        )`,
   )
 
-  // Exact 4 policies with exact names, commands, and roles
+  // Exact 4 policies with exact names, commands, roles, USING, and WITH CHECK.
+  // Canonical fingerprints imported from D11_STUDY_VISUALS_STORAGE_POLICY_SPECS.
   const byName = new Map(rows.map(r => [r.policyname as string, r]))
-  const expected: Array<{ name: string; cmd: string; using: string; with_check: string | null }> = [
-    {
-      name: 'For full customization 137qt67_0', cmd: 'SELECT',
-      using: `((bucket_id = 'study-visuals'::text) AND ((auth.uid())::text = (storage.foldername(name))[1]))`,
-      with_check: null,
-    },
-    {
-      name: 'For full customization 137qt67_1', cmd: 'INSERT',
-      using: null as unknown as string,
-      with_check: `((bucket_id = 'study-visuals'::text) AND ((auth.uid())::text = (storage.foldername(name))[1]))`,
-    },
-    {
-      name: 'For full customization 137qt67_2', cmd: 'UPDATE',
-      using: `((bucket_id = 'study-visuals'::text) AND ((auth.uid())::text = (storage.foldername(name))[1]))`,
-      with_check: null,
-    },
-    {
-      name: 'For full customization 137qt67_3', cmd: 'DELETE',
-      using: `((bucket_id = 'study-visuals'::text) AND ((auth.uid())::text = (storage.foldername(name))[1]))`,
-      with_check: null,
-    },
-  ]
 
-  if (rows.length !== expected.length) {
+  if (rows.length !== D11_STUDY_VISUALS_STORAGE_POLICY_SPECS.length) {
     throw new Error(
-      `[BASELINE] Expected exactly ${expected.length} study-visuals storage policies; ` +
+      `[BASELINE] Expected exactly ${D11_STUDY_VISUALS_STORAGE_POLICY_SPECS.length} study-visuals storage policies; ` +
       `found ${rows.length}. D11 S19 confirmed 4 policies.`,
     )
   }
 
-  for (const exp of expected) {
-    const row = byName.get(exp.name)
+  for (const spec of D11_STUDY_VISUALS_STORAGE_POLICY_SPECS) {
+    const row = byName.get(spec.name)
     if (!row) {
       throw new Error(
-        `[BASELINE] Storage policy "${exp.name}" not found on storage.objects. ` +
+        `[BASELINE] Storage policy "${spec.name}" not found on storage.objects. ` +
         `D11 S19 confirmed this policy.`,
       )
     }
-    if (row.cmd !== exp.cmd) {
+    if (row.cmd !== spec.cmd) {
       throw new Error(
-        `[BASELINE] Storage policy "${exp.name}" cmd expected ${exp.cmd}; got: ${String(row.cmd)}.`,
+        `[BASELINE] Storage policy "${spec.name}" cmd expected ${spec.cmd}; got: ${String(row.cmd)}.`,
       )
     }
     if (row.permissive !== 'PERMISSIVE') {
       throw new Error(
-        `[BASELINE] Storage policy "${exp.name}" expected PERMISSIVE; got: ${String(row.permissive)}.`,
+        `[BASELINE] Storage policy "${spec.name}" expected PERMISSIVE; got: ${String(row.permissive)}.`,
       )
     }
-    // Parse PostgreSQL array literal '{element,...}' returned by pg driver as text
     const rolesRaw = String(row.roles ?? '{}')
     const rolesArr = rolesRaw === '{}' ? [] : rolesRaw.replace(/^\{|\}$/g, '').split(',')
-    if (rolesArr.length !== 1 || rolesArr[0] !== 'authenticated') {
+    if (rolesArr.length !== 1 || rolesArr[0] !== spec.role) {
       throw new Error(
-        `[BASELINE] Storage policy "${exp.name}" expected exactly roles={authenticated}; ` +
+        `[BASELINE] Storage policy "${spec.name}" expected exactly roles={${spec.role}}; ` +
         `got: ${rolesRaw}.`,
+      )
+    }
+    const usingRaw = (row.using_clause ?? null) as string | null
+    if (usingRaw !== spec.qual) {
+      throw new Error(
+        `[BASELINE] Storage policy "${spec.name}" USING clause mismatch. ` +
+        `Expected: ${String(spec.qual)}. Got: ${String(usingRaw)}.`,
+      )
+    }
+    const withCheckRaw = (row.with_check ?? null) as string | null
+    if (withCheckRaw !== spec.withCheck) {
+      throw new Error(
+        `[BASELINE] Storage policy "${spec.name}" WITH CHECK clause mismatch. ` +
+        `Expected: ${String(spec.withCheck)}. Got: ${String(withCheckRaw)}.`,
       )
     }
   }
 
-  // Verify 7 unrelated storage policies remain present
-  const unrelatedPolicies = [
-    'Users can read own files',
-    'Users can upload to own folder',
-    'Users can delete own files',
-    'recordings_read',
-    'recordings_upload',
-    'recordings_update',
-    'recordings_delete',
-  ]
-  for (const pName of unrelatedPolicies) {
+  // Verify 7 unrelated storage policies — exact USING/WITH CHECK from D11_UNRELATED_STORAGE_POLICY_SPECS.
+  for (const spec of D11_UNRELATED_STORAGE_POLICY_SPECS) {
     const { rows: pr } = await query(
-      `SELECT policyname FROM pg_policies
+      `SELECT policyname, cmd, permissive, roles::text AS roles, qual AS using_clause, with_check
+       FROM pg_policies
        WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = $1`,
-      [pName],
+      [spec.name],
     )
     if (pr.length === 0) {
       throw new Error(
-        `[BASELINE] Unrelated storage policy "${pName}" is missing. ` +
+        `[BASELINE] Unrelated storage policy "${spec.name}" is missing. ` +
         `This policy must not be modified by the corrective migration.`,
+      )
+    }
+    const pr0 = pr[0]!
+    if (pr0.cmd !== spec.cmd) {
+      throw new Error(
+        `[BASELINE] Unrelated policy "${spec.name}" cmd expected ${spec.cmd}; got: ${String(pr0.cmd)}.`,
+      )
+    }
+    const usingActual = (pr0.using_clause ?? null) as string | null
+    if (usingActual !== spec.qual) {
+      throw new Error(
+        `[BASELINE] Unrelated policy "${spec.name}" USING clause mismatch. ` +
+        `Expected: ${String(spec.qual)}. Got: ${String(usingActual)}.`,
+      )
+    }
+    const withCheckActual = (pr0.with_check ?? null) as string | null
+    if (withCheckActual !== spec.withCheck) {
+      throw new Error(
+        `[BASELINE] Unrelated policy "${spec.name}" WITH CHECK clause mismatch. ` +
+        `Expected: ${String(spec.withCheck)}. Got: ${String(withCheckActual)}.`,
       )
     }
   }
@@ -824,15 +824,9 @@ export async function assertStudyVisualsStoragePolicies(query: QueryFn): Promise
 // Covers all known objects introduced by 20260729120001_generation_job_state_machine_schema.sql.
 
 export async function assertCorrectiveObjectsAbsent(query: QueryFn): Promise<void> {
-  // Functions added by corrective migration must not exist
-  const corrFunctions = [
-    'fn_enqueue_job', 'fn_claim_job', 'fn_heartbeat_job',
-    'fn_complete_and_publish_job', 'fn_fail_job', 'fn_recover_stale_jobs',
-    'fn_sha256_hex', 'fn_canonical_jsonb_v1', 'fn_canonical_source_v1',
-    'fn_canonical_request_v1', 'fn_snapshot_immutability_guard',
-  ]
-
-  for (const fn of corrFunctions) {
+  // Functions added by corrective migration must not exist.
+  // Source of truth: CORRECTIVE_FUNCTIONS from validationContract.ts
+  for (const fn of CORRECTIVE_FUNCTIONS) {
     const { rows } = await query(
       `SELECT proname FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -848,11 +842,7 @@ export async function assertCorrectiveObjectsAbsent(query: QueryFn): Promise<voi
   }
 
   // Tables added by corrective migration must not exist
-  const corrTables = [
-    'generation_source_snapshots', 'generation_job_requests',
-    'generation_job_usage',
-  ]
-  for (const tbl of corrTables) {
+  for (const tbl of POST_CORRECTIVE_NEW_TABLES) {
     const { rows } = await query(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name = $1`,
@@ -866,14 +856,18 @@ export async function assertCorrectiveObjectsAbsent(query: QueryFn): Promise<voi
     }
   }
 
-  // Corrective indexes must not exist
-  const corrIndexes = [
-    'generation_jobs_active_exclusion', 'generation_jobs_originating_key',
-  ]
-  for (const idx of corrIndexes) {
+  // Corrective indexes must not exist.
+  // Source of truth: POST_CORRECTIVE_GENERATION_JOBS_INDEXES from validationContract.ts
+  // Includes: generation_jobs_active_exclusion, generation_jobs_originating_key,
+  //           generation_jobs_active_status
+  for (const idx of POST_CORRECTIVE_GENERATION_JOBS_INDEXES) {
     const { rows } = await query(
-      `SELECT indexname FROM pg_indexes
-       WHERE schemaname = 'public' AND indexname = $1`,
+      `SELECT ci.relname AS name
+       FROM pg_index    ix
+         JOIN pg_class  ci ON ci.oid = ix.indexrelid
+         JOIN pg_class  ct ON ct.oid = ix.indrelid
+         JOIN pg_namespace n ON n.oid = ct.relnamespace
+       WHERE n.nspname = 'public' AND ci.relname = $1`,
       [idx],
     )
     if (rows.length > 0) {
@@ -898,6 +892,66 @@ export async function assertCorrectiveObjectsAbsent(query: QueryFn): Promise<voi
     )
   }
 
+  // study_visuals provenance columns added by corrective migration must not exist
+  for (const col of POST_CORRECTIVE_STUDY_VISUALS_NEW_COLUMNS) {
+    const { rows } = await query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'study_visuals' AND column_name = $1`,
+      [col],
+    )
+    if (rows.length > 0) {
+      throw new Error(
+        `[BASELINE] study_visuals.${col} exists but must not in D11 pre-state. ` +
+        `This column is added by the corrective migration section 17d.`,
+      )
+    }
+  }
+
+  // documents_id_user_id_unique — added by corrective migration; must not exist in D11
+  const { rows: docUniqRows } = await query(
+    `SELECT conname FROM pg_constraint
+     WHERE conrelid = 'public.documents'::regclass
+       AND contype = 'u'
+       AND conname = 'documents_id_user_id_unique'`,
+  )
+  if (docUniqRows.length > 0) {
+    throw new Error(
+      `[BASELINE] documents_id_user_id_unique constraint exists in D11 pre-state but must not. ` +
+      `Corrective migration section 17b adds this.`,
+    )
+  }
+
+  // document_analysis corrective constraints must not exist
+  for (const conname of CORRECTIVE_ABSENT_DA_CONSTRAINTS) {
+    const { rows } = await query(
+      `SELECT conname FROM pg_constraint
+       WHERE conrelid = 'public.document_analysis'::regclass
+         AND conname = $1`,
+      [conname],
+    )
+    if (rows.length > 0) {
+      throw new Error(
+        `[BASELINE] document_analysis.${conname} exists in D11 pre-state but must not. ` +
+        `Corrective migration section 17b adds this constraint.`,
+      )
+    }
+  }
+
+  // Two RESTRICTIVE storage policies added by the corrective migration must not exist at D11
+  for (const policyName of POST_CORRECTIVE_RESTRICTIVE_POLICIES) {
+    const { rows } = await query(
+      `SELECT policyname FROM pg_policies
+       WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = $1`,
+      [policyName],
+    )
+    if (rows.length > 0) {
+      throw new Error(
+        `[BASELINE] Corrective RESTRICTIVE storage policy "${policyName}" exists in D11 pre-state but must not. ` +
+        `Corrective migration section 19 creates this policy.`,
+      )
+    }
+  }
+
   // generation_jobs itself must not exist (created by beta_foundation_v1.sql, not by fixture)
   await assertGenerationJobsAbsent(query)
 }
@@ -908,37 +962,67 @@ export async function assertCorrectiveObjectsAbsent(query: QueryFn): Promise<voi
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── 21. generation_jobs baseline column shape (post-historical) ───────────────
-// D11 S2_columns: exactly 13 columns. Status check: 5 values (no cancel_requested).
+// D11 S2_columns: exactly 13 columns in exact ordinal order.
+// Canonical fingerprint imported from validationContract.ts (D11_GENERATION_JOBS_BASELINE_COLUMNS).
 // Run this AFTER beta_foundation_v1.sql has been applied.
-
-const GENERATION_JOBS_EXPECTED_COLUMNS = new Set([
-  'id', 'user_id', 'document_id', 'job_type', 'status',
-  'input_data', 'result_data', 'error', 'correlation_id',
-  'created_at', 'updated_at', 'started_at', 'completed_at',
-])
 
 export async function assertGenerationJobsBaselineShape(query: QueryFn): Promise<void> {
   const { rows } = await query(
-    `SELECT column_name
+    `SELECT column_name, ordinal_position::int AS ordinal, data_type, udt_name, is_nullable, column_default
      FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = 'generation_jobs'
      ORDER BY ordinal_position`,
   )
-  const colNames = new Set(rows.map(r => r.column_name as string))
 
-  for (const expected of GENERATION_JOBS_EXPECTED_COLUMNS) {
-    if (!colNames.has(expected)) {
+  if (rows.length !== D11_GENERATION_JOBS_BASELINE_COLUMNS.length) {
+    throw new Error(
+      `[POST-HISTORICAL] generation_jobs has ${rows.length} columns; expected ${D11_GENERATION_JOBS_BASELINE_COLUMNS.length}. ` +
+      `Columns found: ${rows.map(r => r.column_name).join(', ')}. ` +
+      `D11 S2_columns confirmed 13-column post-historical state.`,
+    )
+  }
+
+  for (const exp of D11_GENERATION_JOBS_BASELINE_COLUMNS) {
+    const row = rows.find(r => r.column_name === exp.name)
+    if (!row) {
       throw new Error(
-        `[POST-HISTORICAL] generation_jobs missing expected column: ${expected}. ` +
+        `[POST-HISTORICAL] generation_jobs missing expected column: ${exp.name}. ` +
         `D11 S2_columns confirmed 13-column post-historical state.`,
       )
     }
-  }
-  if (colNames.size !== GENERATION_JOBS_EXPECTED_COLUMNS.size) {
-    throw new Error(
-      `[POST-HISTORICAL] generation_jobs has ${colNames.size} columns; expected 13. ` +
-      `Columns found: ${[...colNames].join(', ')}`,
-    )
+    const gotOrdinal = typeof row.ordinal === 'string' ? parseInt(row.ordinal, 10) : Number(row.ordinal)
+    if (gotOrdinal !== exp.ordinal) {
+      throw new Error(
+        `[POST-HISTORICAL] generation_jobs.${exp.name} ordinal_position expected ${exp.ordinal}; ` +
+        `got: ${gotOrdinal}.`,
+      )
+    }
+    if (row.data_type !== exp.data_type) {
+      throw new Error(
+        `[POST-HISTORICAL] generation_jobs.${exp.name} data_type expected "${exp.data_type}"; ` +
+        `got: "${String(row.data_type)}".`,
+      )
+    }
+    if (row.udt_name !== exp.udt_name) {
+      throw new Error(
+        `[POST-HISTORICAL] generation_jobs.${exp.name} udt_name expected "${exp.udt_name}"; ` +
+        `got: "${String(row.udt_name)}".`,
+      )
+    }
+    if (row.is_nullable !== exp.is_nullable) {
+      throw new Error(
+        `[POST-HISTORICAL] generation_jobs.${exp.name} is_nullable expected "${exp.is_nullable}"; ` +
+        `got: "${String(row.is_nullable)}".`,
+      )
+    }
+    const gotDefault = (row.column_default ?? null) as string | null
+    if (gotDefault !== exp.column_default) {
+      throw new Error(
+        `[POST-HISTORICAL] generation_jobs.${exp.name} column_default expected ` +
+        `${exp.column_default === null ? 'null' : `"${exp.column_default}"`}; ` +
+        `got: ${gotDefault === null ? 'null' : `"${gotDefault}"`}.`,
+      )
+    }
   }
 
   // Status check must NOT include cancel_requested
@@ -976,29 +1060,7 @@ export async function assertGenerationJobsBaselineShape(query: QueryFn): Promise
 // D11 S11: one permissive FOR ALL TO public policy named "Users see own jobs".
 
 export async function assertGenerationJobsBaselinePolicy(query: QueryFn): Promise<void> {
-  const { rows } = await query(
-    `SELECT policyname, cmd, permissive, roles::text AS roles
-     FROM pg_policies
-     WHERE schemaname = 'public' AND tablename = 'generation_jobs'`,
-  )
-  if (rows.length !== 1) {
-    throw new Error(
-      `[POST-HISTORICAL] generation_jobs expected exactly 1 RLS policy; found ${rows.length}. ` +
-      `D11 S11 confirmed only "Users see own jobs".`,
-    )
-  }
-  const p = rows[0]
-  if (p?.policyname !== 'Users see own jobs') {
-    throw new Error(
-      `[POST-HISTORICAL] generation_jobs policy name expected "Users see own jobs"; ` +
-      `got: ${String(p?.policyname)}`,
-    )
-  }
-  if (p?.cmd !== 'ALL') {
-    throw new Error(
-      `[POST-HISTORICAL] generation_jobs policy cmd expected ALL; got: ${String(p?.cmd)}`,
-    )
-  }
+  await _assertTablePolicies(query, 'generation_jobs', D11_GENERATION_JOBS_BASELINE_POLICY_SPECS, 'POST-HISTORICAL')
 }
 
 // ── 23. RLS enabled on all four target tables (post-historical) ───────────────
@@ -1029,6 +1091,336 @@ export async function assertRlsEnabledOnAllTargetTables(query: QueryFn): Promise
   }
 }
 
+// ── 20. D11 table ACL fingerprint for pre-migration tables ───────────────────
+// D11 SA07: all four tables have full privileges for exactly 4 roles (no PUBLIC).
+// At Stage 0 (before beta_foundation_v1.sql), generation_jobs does not exist.
+// We assert only the 3 pre-migration tables: documents, document_analysis, study_visuals.
+// Uses symmetric aclexplode tuple equality with grantor field.
+
+export async function assertBaselineTableAcls(query: QueryFn): Promise<void> {
+  const tables = ['documents', 'document_analysis', 'study_visuals']
+  for (const tbl of tables) {
+    const { rows } = await query(
+      `SELECT
+         pg_catalog.pg_get_userbyid(e.grantor) AS grantor,
+         CASE WHEN e.grantee = 0 THEN '' ELSE pg_catalog.pg_get_userbyid(e.grantee) END AS grantee,
+         e.privilege_type,
+         e.is_grantable
+       FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace,
+         LATERAL aclexplode(c.relacl) e
+       WHERE n.nspname = 'public'
+         AND c.relname = $1
+         AND c.relkind = 'r'
+       ORDER BY grantee, e.privilege_type`,
+      [tbl],
+    )
+    _compareDefaultAclTuples(rows, D11_TABLE_ACL_TUPLES[tbl]!, `[BASELINE] ${tbl} table ACL (D11 SA07)`)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIVATE HELPERS — baseline constraint / index / policy / ACL comparators
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _defaultAclSortKey(t: DefaultAclTuple): string {
+  return `${t.grantor}|${t.grantee}|${t.privilege_type}|${String(t.is_grantable)}`
+}
+
+function _compareDefaultAclTuples(
+  actual:   Record<string, unknown>[],
+  expected: DefaultAclTuple[],
+  label:    string,
+): void {
+  const got: DefaultAclTuple[] = actual.map(r => ({
+    grantor:        r['grantor'] as string,
+    grantee:        (r['grantee'] as string | null) ?? '',
+    privilege_type: r['privilege_type'] as string,
+    is_grantable:   r['is_grantable'] as boolean,
+  })).sort((a, b) => _defaultAclSortKey(a).localeCompare(_defaultAclSortKey(b)))
+  const exp = [...expected].sort((a, b) => _defaultAclSortKey(a).localeCompare(_defaultAclSortKey(b)))
+
+  if (got.length !== exp.length) {
+    throw new Error(
+      `${label}: expected ${exp.length} ACL tuples, got ${got.length}. ` +
+      `Actual: ${JSON.stringify(got)}. Expected: ${JSON.stringify(exp)}.`,
+    )
+  }
+  for (let i = 0; i < exp.length; i++) {
+    const g = got[i]!
+    const e = exp[i]!
+    if (g.grantor !== e.grantor || g.grantee !== e.grantee || g.privilege_type !== e.privilege_type || g.is_grantable !== e.is_grantable) {
+      throw new Error(
+        `${label}: mismatch at sorted index ${i}. ` +
+        `Expected (${e.grantor}, ${e.grantee}, ${e.privilege_type}, ${e.is_grantable}) ` +
+        `got (${g.grantor}, ${g.grantee}, ${g.privilege_type}, ${g.is_grantable}). ` +
+        `Full actual: ${JSON.stringify(got)}.`,
+      )
+    }
+  }
+}
+
+async function _assertTableConstraints(
+  query:     QueryFn,
+  tableName: string,
+  expected:  ConstraintSpec[],
+  context:   string,
+): Promise<void> {
+  const { rows } = await query(
+    `SELECT c.conname AS name, c.contype, c.condeferrable, c.condeferred,
+       pg_get_constraintdef(c.oid) AS exact_def,
+       c.confdeltype AS confdeltype,
+       c.confupdtype AS confupdtype
+     FROM pg_constraint c
+       JOIN pg_class cl ON cl.oid = c.conrelid
+       JOIN pg_namespace n ON n.oid = cl.relnamespace
+     WHERE n.nspname = 'public' AND cl.relname = $1
+     ORDER BY c.conname`,
+    [tableName],
+  )
+
+  const actualNames  = new Set<string>(rows.map(r => r.name as string))
+  const expectedNames = new Set<string>(expected.map(s => s.name))
+
+  for (const exp of expected) {
+    if (!actualNames.has(exp.name)) {
+      throw new Error(
+        `[${context}] ${tableName}: expected constraint "${exp.name}" not found. ` +
+        `Actual constraints: ${[...actualNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const row of rows) {
+    if (!expectedNames.has(row.name as string)) {
+      throw new Error(
+        `[${context}] ${tableName}: unexpected constraint "${row.name}". Not in D11 fingerprint. ` +
+        `Expected: ${[...expectedNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const exp of expected) {
+    const row = rows.find(r => r.name === exp.name)!
+    if (row.contype !== exp.contype) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.name}: contype expected "${exp.contype}"; got "${row.contype}".`,
+      )
+    }
+    if (row.exact_def !== exp.exact_def) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.name}: exact_def expected "${exp.exact_def}"; got "${row.exact_def}".`,
+      )
+    }
+    if (exp.condeferrable !== undefined && !!row.condeferrable !== exp.condeferrable) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.name}: condeferrable expected ${exp.condeferrable}; got ${!!row.condeferrable}.`,
+      )
+    }
+    if (exp.condeferred !== undefined && !!row.condeferred !== exp.condeferred) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.name}: condeferred expected ${exp.condeferred}; got ${!!row.condeferred}.`,
+      )
+    }
+    if (exp.confdeltype !== undefined) {
+      const gotDel = row.confdeltype as string | null
+      if (gotDel !== exp.confdeltype) {
+        throw new Error(
+          `[${context}] ${tableName}.${exp.name}: confdeltype expected "${exp.confdeltype}"; got "${gotDel}".`,
+        )
+      }
+    }
+    if (exp.confupdtype !== undefined) {
+      const gotUpd = row.confupdtype as string | null
+      if (gotUpd !== exp.confupdtype) {
+        throw new Error(
+          `[${context}] ${tableName}.${exp.name}: confupdtype expected "${exp.confupdtype}"; got "${gotUpd}".`,
+        )
+      }
+    }
+  }
+}
+
+async function _assertTableIndexes(
+  query:    QueryFn,
+  schema:   string,
+  table:    string,
+  expected: IndexSpec[],
+  context:  string,
+): Promise<void> {
+  const { rows } = await query(
+    `SELECT ci.relname AS name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary,
+       (ix.indpred IS NOT NULL) AS is_partial, pg_get_expr(ix.indpred, ix.indrelid) AS predicate,
+       pg_get_indexdef(ix.indexrelid) AS indexdef, n.nspname AS schema_name, ct.relname AS table_name
+     FROM pg_index ix
+       JOIN pg_class ci ON ci.oid = ix.indexrelid
+       JOIN pg_class ct ON ct.oid = ix.indrelid
+       JOIN pg_namespace n ON n.oid = ct.relnamespace
+     WHERE n.nspname = $1 AND ct.relname = $2`,
+    [schema, table],
+  )
+
+  const actualNames   = new Set<string>(rows.map(r => r.name as string))
+  const expectedNames = new Set<string>(expected.map(s => s.name))
+
+  for (const exp of expected) {
+    if (!actualNames.has(exp.name)) {
+      throw new Error(
+        `[${context}] ${table}: expected index "${exp.name}" not found. ` +
+        `Actual indexes: ${[...actualNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const row of rows) {
+    if (!expectedNames.has(row.name as string)) {
+      throw new Error(
+        `[${context}] ${table}: unexpected index "${row.name}". Not in D11 fingerprint. ` +
+        `Expected: ${[...expectedNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const exp of expected) {
+    const row = rows.find(r => r.name === exp.name)!
+    if (row.schema_name !== exp.schema) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: schema expected "${exp.schema}"; got "${row.schema_name}".`,
+      )
+    }
+    if (row.table_name !== exp.table) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: table binding expected "${exp.table}"; got "${row.table_name}".`,
+      )
+    }
+    if (!!row.is_unique !== exp.is_unique) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: is_unique expected ${exp.is_unique}; got ${!!row.is_unique}.`,
+      )
+    }
+    if (!!row.is_partial !== exp.is_partial) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: is_partial expected ${exp.is_partial}; got ${!!row.is_partial}.`,
+      )
+    }
+    const gotPred = (row.predicate ?? null) as string | null
+    if (gotPred !== exp.predicate) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: predicate expected ${JSON.stringify(exp.predicate)}; got ${JSON.stringify(gotPred)}.`,
+      )
+    }
+    if (row.indexdef !== exp.pg_get_indexdef) {
+      throw new Error(
+        `[${context}] ${table}.${exp.name}: pg_get_indexdef expected "${exp.pg_get_indexdef}"; got "${row.indexdef}".`,
+      )
+    }
+  }
+}
+
+async function _assertTablePolicies(
+  query:     QueryFn,
+  tableName: string,
+  expected:  PublicTablePolicySpec[],
+  context:   string,
+): Promise<void> {
+  const { rows } = await query(
+    `SELECT policyname, permissive, cmd, roles::text AS roles, qual, with_check
+     FROM pg_policies
+     WHERE schemaname = 'public' AND tablename = $1`,
+    [tableName],
+  )
+
+  const actualNames   = new Set<string>(rows.map(r => r.policyname as string))
+  const expectedNames = new Set<string>(expected.map(s => s.policyname))
+
+  for (const exp of expected) {
+    if (!actualNames.has(exp.policyname)) {
+      throw new Error(
+        `[${context}] ${tableName}: expected policy "${exp.policyname}" not found. ` +
+        `Actual policies: ${[...actualNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const row of rows) {
+    if (!expectedNames.has(row.policyname as string)) {
+      throw new Error(
+        `[${context}] ${tableName}: unexpected policy "${row.policyname}". Not in D11 fingerprint. ` +
+        `Expected: ${[...expectedNames].join(', ')}.`,
+      )
+    }
+  }
+  for (const exp of expected) {
+    const row = rows.find(r => r.policyname === exp.policyname)!
+    if (row.permissive !== exp.permissive) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.policyname}: permissive expected "${exp.permissive}"; got "${row.permissive}".`,
+      )
+    }
+    if (row.cmd !== exp.cmd) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.policyname}: cmd expected "${exp.cmd}"; got "${row.cmd}".`,
+      )
+    }
+    if (row.roles !== exp.roles) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.policyname}: roles expected "${exp.roles}"; got "${row.roles}".`,
+      )
+    }
+    const gotQual = (row.qual ?? null) as string | null
+    if (gotQual !== exp.qual) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.policyname}: qual expected ${JSON.stringify(exp.qual)}; got ${JSON.stringify(gotQual)}.`,
+      )
+    }
+    const gotWithCheck = (row.with_check ?? null) as string | null
+    if (gotWithCheck !== exp.with_check) {
+      throw new Error(
+        `[${context}] ${tableName}.${exp.policyname}: with_check expected ${JSON.stringify(exp.with_check)}; got ${JSON.stringify(gotWithCheck)}.`,
+      )
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D11 BASELINE: Symmetric constraint, index, and policy assertions
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function assertDocumentsBaselineConstraints(query: QueryFn): Promise<void> {
+  await _assertTableConstraints(query, 'documents', D11_DOCUMENTS_CONSTRAINTS, 'BASELINE')
+}
+
+export async function assertDocumentAnalysisBaselineConstraints(query: QueryFn): Promise<void> {
+  await _assertTableConstraints(query, 'document_analysis', D11_DOCUMENT_ANALYSIS_CONSTRAINTS, 'BASELINE')
+}
+
+export async function assertStudyVisualsBaselineConstraints(query: QueryFn): Promise<void> {
+  await _assertTableConstraints(query, 'study_visuals', D11_STUDY_VISUALS_CONSTRAINTS, 'BASELINE')
+}
+
+export async function assertGenerationJobsBaselineConstraints(query: QueryFn): Promise<void> {
+  await _assertTableConstraints(query, 'generation_jobs', D11_GENERATION_JOBS_CONSTRAINTS, 'POST-HISTORICAL')
+}
+
+export async function assertDocumentsBaselineIndexes(query: QueryFn): Promise<void> {
+  await _assertTableIndexes(query, 'public', 'documents', D11_DOCUMENTS_INDEX_SPECS, 'BASELINE')
+}
+
+export async function assertDocumentAnalysisBaselineIndexes(query: QueryFn): Promise<void> {
+  await _assertTableIndexes(query, 'public', 'document_analysis', D11_DOCUMENT_ANALYSIS_INDEX_SPECS, 'BASELINE')
+}
+
+export async function assertStudyVisualsBaselineIndexes(query: QueryFn): Promise<void> {
+  await _assertTableIndexes(query, 'public', 'study_visuals', D11_STUDY_VISUALS_INDEX_SPECS, 'BASELINE')
+}
+
+export async function assertGenerationJobsBaselineIndexes(query: QueryFn): Promise<void> {
+  await _assertTableIndexes(query, 'public', 'generation_jobs', D11_GENERATION_JOBS_BASELINE_INDEX_SPECS, 'POST-HISTORICAL')
+}
+
+export async function assertDocumentsBaselinePolicies(query: QueryFn): Promise<void> {
+  await _assertTablePolicies(query, 'documents', D11_DOCUMENTS_POLICY_SPECS, 'BASELINE')
+}
+
+export async function assertDocumentAnalysisBaselinePolicy(query: QueryFn): Promise<void> {
+  await _assertTablePolicies(query, 'document_analysis', D11_DOCUMENT_ANALYSIS_POLICY_SPECS, 'BASELINE')
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE RUNNERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1055,7 +1447,17 @@ export async function runStage0PreMigrationAssertions(query: QueryFn): Promise<v
   await assertAllTriggerDependants(query)
   await assertStudyVisualsBucket(query)
   await assertStudyVisualsStoragePolicies(query)
+  await assertBaselineTableAcls(query)
   await assertCorrectiveObjectsAbsent(query)
+  // Exact D11 constraint / index / policy fingerprints for pre-migration tables
+  await assertDocumentsBaselineConstraints(query)
+  await assertDocumentsBaselineIndexes(query)
+  await assertDocumentsBaselinePolicies(query)
+  await assertDocumentAnalysisBaselineConstraints(query)
+  await assertDocumentAnalysisBaselineIndexes(query)
+  await assertDocumentAnalysisBaselinePolicy(query)
+  await assertStudyVisualsBaselineConstraints(query)
+  await assertStudyVisualsBaselineIndexes(query)
 }
 
 // Stage 1: Run post-historical assertions.
@@ -1064,6 +1466,9 @@ export async function runStage1PostHistoricalAssertions(query: QueryFn): Promise
   await assertGenerationJobsBaselineShape(query)
   await assertGenerationJobsBaselinePolicy(query)
   await assertRlsEnabledOnAllTargetTables(query)
+  // Exact D11 constraint / index fingerprints for generation_jobs (created by beta_foundation_v1.sql)
+  await assertGenerationJobsBaselineConstraints(query)
+  await assertGenerationJobsBaselineIndexes(query)
 }
 
 // Legacy alias — runs Stage 0. Prefer runStage0PreMigrationAssertions().
