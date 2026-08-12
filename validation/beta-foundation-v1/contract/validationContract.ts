@@ -7,6 +7,14 @@
 //   - .ai/inspection/d11-catalogue-results-2026-07-31.csv
 //   - .ai/inspection/d11-additional-authority-results-2026-07-31.csv
 //   - migrations/20260729120001_generation_job_state_machine_schema.sql
+//
+// ── Approved execution pins (George-approved 2026-08-12) ─────────────────────
+//
+//   Supabase CLI:           2.110.0   (installed as exact dev dependency)
+//   D11 fixture SHA-256:    8eb334e622f5d9c3ee6e74e727bcffecf9b5dad5a734cc2831d9f27748818593
+//                           (validation/beta-foundation-v1/fixtures/d11-baseline.sql)
+//
+// These pins must be verified before any disposable local execution begins.
 
 // ── Shared interfaces ─────────────────────────────────────────────────────────
 
