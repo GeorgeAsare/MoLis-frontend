@@ -23,8 +23,14 @@ import { randomBytes } from 'crypto'
 
 // Minimal Pool interface matched by pg@8.x — avoids hard dep on @types/pg at compile time.
 // pg must be installed (devDependency) before running Group B tests.
+export interface PgPoolClient {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>
+  release(): void
+}
+
 export interface PgPool {
   query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>
+  connect(): Promise<PgPoolClient>
   end(): Promise<void>
 }
 

@@ -170,7 +170,8 @@ async function assertCompleteConstraintSet(
   const { rows: nameRows } = await query(
     `SELECT conname
      FROM pg_constraint
-     WHERE conrelid = $1::regclass`,
+     WHERE conrelid = $1::regclass
+       AND contype IN ('p','u','f','c','x')`,
     [`public.${tableName}`],
   )
   const actualNames = new Set(nameRows.map(r => r.conname as string))

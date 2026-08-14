@@ -100,7 +100,7 @@ export function verifyMigrationChecksums(repoRoot: string): {
   corrective: { path: string; actual: string; expected: string; match: boolean }
 } {
   const EXPECTED_HISTORICAL = 'd2bc6e2cd63c243d8577b3b4785fb8638e13466472917cbd79203e3442fdb60b'
-  const EXPECTED_CORRECTIVE = '12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404'
+  const EXPECTED_CORRECTIVE = 'bf76114abd8157637c42bef9fbb2e64751f5a6f8cc19868c22e1c2a7d21afdf9'
 
   const historicalPath = join(repoRoot, 'migrations/beta_foundation_v1.sql')
   const correctivePath = join(repoRoot, 'migrations/20260729120001_generation_job_state_machine_schema.sql')

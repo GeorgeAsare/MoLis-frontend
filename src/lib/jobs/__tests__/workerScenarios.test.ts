@@ -889,11 +889,67 @@ describe('Phase 2 — Database integration', () => {
       const actorA = makeSyntheticActorA()
       const actorB = makeSyntheticActorB()
 
-      // Remove any leftover actors from a previous aborted run
-      const { data: { users } } = await serviceClient.auth.admin.listUsers()
-      for (const u of users ?? []) {
-        if (u.email === actorA.email || u.email === actorB.email) {
-          await serviceClient.auth.admin.deleteUser(u.id)
+      // Remove any leftover actors from a previous aborted run.
+      // Deletion requires (a) a privileged postgres connection with
+      // session_replication_role = 'replica' to bypass the immutability-guard
+      // BEFORE triggers on generation_source_snapshots and generation_job_usage,
+      // and (b) explicit deletion in FK dependency order (FK constraints still
+      // fire in replica mode). This is disposable-DB-only cleanup; it does not
+      // touch production auth logic.
+      const { data: listData, error: listError } = await serviceClient.auth.admin.listUsers()
+      if (listError) throw new Error(`[GROUP B] beforeAll: listUsers failed: ${listError.message}`)
+      const staleUsers = (listData?.users ?? []).filter(
+        u => u.email === actorA.email || u.email === actorB.email,
+      )
+      if (staleUsers.length > 0) {
+        // The job state machine tables have a circular RESTRICT FK pair:
+        //   generation_jobs.originating_request_id → generation_job_requests (RESTRICT)
+        //   generation_job_requests.job_id → generation_jobs (RESTRICT)
+        // AND immutability-guard BEFORE triggers on generation_source_snapshots and
+        // generation_job_usage that block DELETE. Both obstacles are bypassed by
+        // session_replication_role = 'replica' on a single dedicated connection, which
+        // disables origin-mode user triggers and FK constraint trigger enforcement.
+        // Deletions must still satisfy remaining FK dependencies within the session.
+        // This is disposable-DB-only cleanup; production tables are never touched.
+        const pgClient = await pgPool.connect()
+        try {
+          await pgClient.query("SET session_replication_role = 'replica'")
+          for (const u of staleUsers) {
+            // Delete in topological order within the session (FK triggers disabled,
+            // but explicit ordering avoids any residual constraint surprises).
+            await pgClient.query(
+              `DELETE FROM public.study_visuals WHERE user_id = $1`,
+              [u.id],
+            )
+            await pgClient.query(
+              `DELETE FROM public.generation_job_usage WHERE job_id IN (SELECT id FROM public.generation_jobs WHERE user_id = $1)`,
+              [u.id],
+            )
+            await pgClient.query(
+              `DELETE FROM public.generation_source_snapshots WHERE user_id = $1`,
+              [u.id],
+            )
+            await pgClient.query(
+              `DELETE FROM public.generation_job_requests WHERE user_id = $1`,
+              [u.id],
+            )
+            await pgClient.query(
+              `DELETE FROM public.generation_jobs WHERE user_id = $1`,
+              [u.id],
+            )
+          }
+        } finally {
+          await pgClient.query("SET session_replication_role = 'origin'")
+          pgClient.release()
+        }
+        // Delete auth users — cascades: documents, user_profiles, user_memories, etc.
+        for (const u of staleUsers) {
+          const { error: delError } = await serviceClient.auth.admin.deleteUser(u.id)
+          if (delError) {
+            throw new Error(
+              `[GROUP B] beforeAll: deleteUser failed for ${u.email}: ${delError.message}`,
+            )
+          }
         }
       }
 
@@ -2193,19 +2249,19 @@ describe('Phase 3 — Static migration content tests (R7-H10)', () => {
 
     // document_analysis_pkey: unique, primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='document_analysis_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='document_analysis_pkey'\n      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: document_analysis_pkey index properties changed")
 
     // idx_document_analysis_document_id: non-unique, non-primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_document_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_document_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: idx_document_analysis_document_id index properties changed")
 
     // idx_document_analysis_user_id: non-unique, non-primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_user_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_user_id'\n      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: idx_document_analysis_user_id index properties changed")
 
@@ -2214,19 +2270,19 @@ describe('Phase 3 — Static migration content tests (R7-H10)', () => {
 
     // documents_pkey: unique, primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_pkey'\n      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: documents_pkey index properties changed")
 
     // documents_source_recording_unique: unique, non-primary, partial, predicate=(source_recording_id IS NOT NULL)
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_source_recording_unique'\n      AND i.indisunique AND NOT i.indisprimary AND i.indispartial\n      AND pg_get_expr(i.indpred,i.indrelid)='(source_recording_id IS NOT NULL)'"
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_source_recording_unique'\n      AND i.indisunique AND NOT i.indisprimary AND i.indpred IS NOT NULL\n      AND pg_get_expr(i.indpred,i.indrelid)='(source_recording_id IS NOT NULL)'"
     )
     expect(migrationSql).toContain("D11 DRIFT: documents_source_recording_unique index properties or predicate changed")
 
     // documents_subject_id_idx: non-unique, non-primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_subject_id_idx'\n      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_subject_id_idx'\n      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: documents_subject_id_idx index properties changed")
 
@@ -2235,13 +2291,13 @@ describe('Phase 3 — Static migration content tests (R7-H10)', () => {
 
     // study_visuals_pkey: unique, primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_pkey'\n      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_pkey'\n      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: study_visuals_pkey index properties changed")
 
     // study_visuals_document_id_user_id_key: unique, non-primary, non-partial, no predicate
     expect(migrationSql).toContain(
-      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_document_id_user_id_key'\n      AND i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL"
+      "n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_document_id_user_id_key'\n      AND i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL"
     )
     expect(migrationSql).toContain("D11 DRIFT: study_visuals_document_id_user_id_key index properties changed")
   })

@@ -126,7 +126,7 @@ export async function captureIndexSnapshot(query: QueryFn): Promise<IndexSnapsho
        ci.relname             AS name,
        ix.indisunique         AS is_unique,
        ix.indisprimary        AS is_primary,
-       ix.indispartial        AS is_partial,
+       (ix.indpred IS NOT NULL) AS is_partial,
        pg_get_indexdef(ix.indexrelid) AS definition
      FROM pg_index    ix
        JOIN pg_class  ci ON ci.oid = ix.indexrelid

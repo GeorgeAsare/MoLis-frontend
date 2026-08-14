@@ -518,12 +518,36 @@ describe('Storage Integration [STORAGE]', () => {
   it.skipIf(NOT_STORAGE_EXECUTED)(
     '[STORAGE] user A cannot delete an existing study-visuals object',
     async () => {
-      // denialTestPath must be set by beforeAll — if not, that is a test failure
       expect(denialTestPath).toBeTruthy()
-      const { error } = await userAClient.storage
+
+      // Pre-flight: row must exist before the attempt
+      const { rows: pre } = await pgPool!.query(
+        `SELECT name FROM storage.objects WHERE bucket_id = $1 AND name = $2`,
+        [VALIDATION_BUCKET, denialTestPath],
+      )
+      expect(pre.length, 'protected object must exist before delete attempt').toBe(1)
+
+      // Storage API v1.66.4 normalizes a zero-row RLS-filtered DELETE as HTTP 200 / []
+      // rather than a permission error; the security contract is the row surviving.
+      await userAClient.storage.from(VALIDATION_BUCKET).remove([denialTestPath!])
+
+      // Security assertion: row must still be present — authenticated user cannot delete.
+      const { rows: post } = await pgPool!.query(
+        `SELECT name FROM storage.objects WHERE bucket_id = $1 AND name = $2`,
+        [VALIDATION_BUCKET, denialTestPath],
+      )
+      expect(post.length, 'protected object must remain after authenticated delete attempt').toBe(1)
+
+      // Prove the object is genuinely deletable: service-role cleanup must succeed.
+      const { error: svcErr } = await serviceClient.storage
         .from(VALIDATION_BUCKET)
         .remove([denialTestPath!])
-      expect(error).not.toBeNull()
+      expect(svcErr, 'service-role must be able to delete the object').toBeNull()
+      const { rows: final } = await pgPool!.query(
+        `SELECT name FROM storage.objects WHERE bucket_id = $1 AND name = $2`,
+        [VALIDATION_BUCKET, denialTestPath],
+      )
+      expect(final.length, 'object must be gone after service-role cleanup').toBe(0)
     },
   )
 

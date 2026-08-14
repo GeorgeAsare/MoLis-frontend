@@ -282,7 +282,7 @@ BEGIN
       ('document_analysis','definitions',     'jsonb',       'NO', '''[]''::jsonb'),
       ('document_analysis','formulas',        'jsonb',       'NO', '''[]''::jsonb'),
       ('document_analysis','examples',        'jsonb',       'NO', '''[]''::jsonb'),
-      ('document_analysis','keywords',        '_text',       'NO', ''''{}''::text[]'),
+      ('document_analysis','keywords',        '_text',       'NO', '''{}''::text[]'),
       ('document_analysis','likely_exam_topics','jsonb',     'NO', '''[]''::jsonb'),
       ('document_analysis','learning_objectives','jsonb',    'NO', '''[]''::jsonb'),
       ('document_analysis','misconceptions',  'jsonb',       'NO', '''[]''::jsonb'),
@@ -309,10 +309,10 @@ BEGIN
   -- Exact baseline constraints that will be preserved or replaced.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.generation_jobs'::regclass
       AND conname='generation_jobs_status_check' AND pg_get_constraintdef(oid)=
-      'CHECK (status = ANY (ARRAY[''queued''::text, ''processing''::text, ''completed''::text, ''failed''::text, ''cancelled''::text]))')
+      'CHECK ((status = ANY (ARRAY[''queued''::text, ''processing''::text, ''completed''::text, ''failed''::text, ''cancelled''::text])))')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.generation_jobs'::regclass
       AND conname='generation_jobs_type_check' AND pg_get_constraintdef(oid)=
-      'CHECK (job_type = ANY (ARRAY[''visuals''::text, ''flashcards''::text, ''quiz''::text, ''revision_notes''::text, ''analysis''::text]))')
+      'CHECK ((job_type = ANY (ARRAY[''visuals''::text, ''flashcards''::text, ''quiz''::text, ''revision_notes''::text, ''analysis''::text])))')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.study_visuals'::regclass
       AND conname='study_visuals_document_id_user_id_key'
       AND pg_get_constraintdef(oid)='UNIQUE (document_id, user_id)') THEN
@@ -331,7 +331,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='generation_jobs' AND ci.relname='generation_jobs_pkey'
-      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: generation_jobs_pkey index properties changed';
   END IF;
@@ -341,7 +341,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='generation_jobs' AND ci.relname='generation_jobs_status'
-      AND NOT i.indisunique AND NOT i.indisprimary AND i.indispartial
+      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NOT NULL
       AND pg_get_expr(i.indpred,i.indrelid)=
         '(status = ANY (ARRAY[''queued''::text, ''processing''::text]))'
   ) THEN
@@ -353,7 +353,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='generation_jobs' AND ci.relname='generation_jobs_user_doc_type'
-      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: generation_jobs_user_doc_type index properties changed';
   END IF;
@@ -595,7 +595,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.documents'::regclass
       AND conname='documents_source_type_check'
       AND pg_get_constraintdef(oid)=
-      'CHECK (source_type IS NULL OR (source_type = ANY (ARRAY[''upload''::text, ''recording''::text])))') THEN
+      'CHECK (((source_type = ANY (ARRAY[''upload''::text, ''recording''::text])) OR (source_type IS NULL)))') THEN
     RAISE EXCEPTION 'D11 DRIFT: documents_source_type_check fingerprint changed';
   END IF;
 
@@ -611,7 +611,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='document_analysis_pkey'
-      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: document_analysis_pkey index properties changed';
   END IF;
@@ -620,7 +620,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_document_id'
-      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: idx_document_analysis_document_id index properties changed';
   END IF;
@@ -629,7 +629,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='document_analysis' AND ci.relname='idx_document_analysis_user_id'
-      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: idx_document_analysis_user_id index properties changed';
   END IF;
@@ -643,7 +643,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_pkey'
-      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: documents_pkey index properties changed';
   END IF;
@@ -653,7 +653,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_source_recording_unique'
-      AND i.indisunique AND NOT i.indisprimary AND i.indispartial
+      AND i.indisunique AND NOT i.indisprimary AND i.indpred IS NOT NULL
       AND pg_get_expr(i.indpred,i.indrelid)='(source_recording_id IS NOT NULL)'
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: documents_source_recording_unique index properties or predicate changed';
@@ -663,7 +663,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='documents' AND ci.relname='documents_subject_id_idx'
-      AND NOT i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND NOT i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: documents_subject_id_idx index properties changed';
   END IF;
@@ -677,7 +677,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_pkey'
-      AND i.indisunique AND i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND i.indisunique AND i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: study_visuals_pkey index properties changed';
   END IF;
@@ -686,7 +686,7 @@ BEGIN
     JOIN pg_class ci ON ci.oid=i.indexrelid JOIN pg_class ct ON ct.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=ct.relnamespace
     WHERE n.nspname='public' AND ct.relname='study_visuals' AND ci.relname='study_visuals_document_id_user_id_key'
-      AND i.indisunique AND NOT i.indisprimary AND NOT i.indispartial AND i.indpred IS NULL
+      AND i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: study_visuals_document_id_user_id_key index properties changed';
   END IF;
@@ -835,13 +835,32 @@ BEGIN
   -- Exact nspacl from D11 SA10 inspection (2026-07-31):
   --   {pg_database_owner=UC/pg_database_owner,=U/pg_database_owner,postgres=U/pg_database_owner,
   --    anon=U/pg_database_owner,authenticated=U/pg_database_owner,service_role=U/pg_database_owner}
-  -- Asserting exact nspacl text fails closed on any Supabase public-schema drift
-  -- before the first mutation (ALTER DEFAULT PRIVILEGES at section 1c).
+  -- Order-independent aclexplode comparison: tuple order varies by grant sequence across
+  -- environments; semantic content is identical to SA10 and matches Stage 0 assertions exactly.
   IF NOT EXISTS (
     SELECT 1 FROM pg_namespace
     WHERE nspname = 'public'
       AND nspowner = 'pg_database_owner'::regrole
-      AND nspacl::text = '{pg_database_owner=UC/pg_database_owner,=U/pg_database_owner,postgres=U/pg_database_owner,anon=U/pg_database_owner,authenticated=U/pg_database_owner,service_role=U/pg_database_owner}'
+  )
+  OR (SELECT count(1) FROM pg_namespace n, LATERAL aclexplode(n.nspacl) e
+      WHERE n.nspname = 'public') <> 7
+  OR EXISTS (
+    SELECT 1 FROM (VALUES
+      ('pg_database_owner'::text, 'CREATE'::text, false),
+      ('pg_database_owner',       'USAGE',         false),
+      ('',                         'USAGE',         false),
+      ('postgres',                 'USAGE',         false),
+      ('anon',                     'USAGE',         false),
+      ('authenticated',            'USAGE',         false),
+      ('service_role',             'USAGE',         false)
+    ) AS expected(grantee, privilege_type, is_grantable)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) e
+      WHERE n.nspname = 'public'
+        AND CASE WHEN e.grantee = 0 THEN '' ELSE pg_get_userbyid(e.grantee) END = expected.grantee
+        AND e.privilege_type = expected.privilege_type
+        AND e.is_grantable = expected.is_grantable
+    )
   ) THEN
     RAISE EXCEPTION 'D11 DRIFT: public schema owner or ACL does not match D11 SA10 baseline (expected pg_database_owner with exact ACL)';
   END IF;
@@ -2645,8 +2664,8 @@ DECLARE
 BEGIN
   SELECT j.user_id, j.document_id, j.job_type, j.attempt_count,
          j.snapshot_id, j.request_payload_hash,
-         s.operation_descriptor->>'text_model' || '+' ||
-           s.operation_descriptor->>'image_model'
+         (s.operation_descriptor->>'text_model') || '+' ||
+           (s.operation_descriptor->>'image_model')
   INTO v_user_id, v_document_id, v_job_type, v_attempt_count,
        v_snapshot_id, v_request_hash, v_expected_model
   FROM public.generation_jobs j
@@ -4657,7 +4676,6 @@ DECLARE
   v_active_request_hash  TEXT;
   v_active_job_status    TEXT;
   v_new_job_id           UUID;
-  v_bound_rows           INTEGER;
 BEGIN
   -- ── Auth ──────────────────────────────────────────────────────────────────
   v_user_id := auth.uid();
@@ -5030,9 +5048,19 @@ BEGIN
             p_document_id, p_job_type, v_active_job_id, v_active_snap_id)
     ON CONFLICT (user_id, request_idempotency_key) DO NOTHING;
 
-    GET DIAGNOSTICS v_bound_rows = ROW_COUNT;
-    IF v_bound_rows = 0 THEN
-      -- Fast path missed this key — concurrent races made it appear before we checked.
+    -- Re-read the ledger to verify the key is durably bound to the active job.
+    -- ON CONFLICT DO NOTHING fires when the concurrent winner already committed this
+    -- key (same-key double-click race). ROW_COUNT would be 0 in that case, but the
+    -- key is correctly bound. Reading the ledger directly handles both paths:
+    -- (a) this INSERT created the row → v_ledger_job_id = v_active_job_id → success
+    -- (b) ON CONFLICT fired (winner already committed) → same verification → success
+    -- Only an unexpected divergence (key absent or bound to a different job) returns
+    -- retry_required, preserving R9-H03 for genuine unresolvable races.
+    SELECT job_id INTO v_ledger_job_id
+    FROM   public.generation_job_requests
+    WHERE  user_id = v_user_id AND request_idempotency_key = p_idempotency_key;
+
+    IF NOT FOUND OR v_ledger_job_id IS DISTINCT FROM v_active_job_id THEN
       -- R9-H03: Structured return instead of P0007.
       RETURN jsonb_build_object(
         'outcome',     'retry_required',
@@ -5236,13 +5264,14 @@ BEGIN
     'public.fn_canonical_request_v1(integer,text,text,jsonb,jsonb)'::regprocedure
   ]) LOOP
     -- R12-C02: use exact proconfig equality, not EXISTS LIKE.
-    -- fn_sha256_hex uses 'search_path=extensions, pg_catalog'; all other MoLis functions use 'search_path='.
+    -- PG17: SET search_path='' stores as search_path=""; SET search_path=extensions,pg_catalog (bare) stores as search_path=extensions, pg_catalog (no quotes).
+    -- fn_sha256_hex uses bare SET search_path=extensions,pg_catalog; all other MoLis functions use SET search_path=''.
     IF NOT EXISTS (SELECT 1 FROM pg_proc
         WHERE oid=v_sig AND proowner='postgres'::regrole AND prosecdef
           AND (
             CASE WHEN v_sig = 'public.fn_sha256_hex(text)'::regprocedure
                  THEN proconfig = ARRAY['search_path=extensions, pg_catalog']
-                 ELSE proconfig = ARRAY['search_path=']
+                 ELSE proconfig = ARRAY['search_path=""']
             END
           )) THEN
       RAISE EXCEPTION 'ACL POSTCONDITION: owner/security/search_path failed for %', v_sig;
@@ -5585,7 +5614,7 @@ BEGIN
   -- R10-H05: Verify exact search_path for each function.
   -- fn_sha256_hex requires 'extensions, pg_catalog' (needs extensions schema for pgcrypto).
   -- All other MoLis functions must have the empty search_path (every schema explicitly qualified).
-  -- proconfig stores GUC values as 'key=value' strings; SET search_path = '' → 'search_path='.
+  -- PG17: fn_sha256_hex uses bare SET search_path=extensions,pg_catalog → stored as search_path=extensions, pg_catalog (no quotes).
   IF NOT EXISTS (SELECT 1 FROM pg_proc
       WHERE oid = 'public.fn_sha256_hex(text)'::regprocedure
         AND proconfig IS NOT NULL
@@ -5618,7 +5647,7 @@ BEGIN
       'public.fn_canonical_request_v1(integer,text,text,jsonb,jsonb)'::regprocedure
     ])
     AND NOT (proconfig IS NOT NULL
-             AND EXISTS (SELECT 1 FROM unnest(p.proconfig) s WHERE s = 'search_path='))
+             AND EXISTS (SELECT 1 FROM unnest(p.proconfig) s WHERE s = 'search_path=""'))
   ) THEN
     RAISE EXCEPTION 'ACL POSTCONDITION: one or more MoLis functions do not have the expected empty search_path';
   END IF;

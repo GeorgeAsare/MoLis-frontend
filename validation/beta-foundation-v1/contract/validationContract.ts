@@ -185,7 +185,7 @@ export const POST_CORRECTIVE_STORAGE_POLICY_COUNT = 9
 
 export const MIGRATION_CHECKSUMS = {
   historical: 'd2bc6e2cd63c243d8577b3b4785fb8638e13466472917cbd79203e3442fdb60b',
-  corrective: '12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404',
+  corrective: 'bf76114abd8157637c42bef9fbb2e64751f5a6f8cc19868c22e1c2a7d21afdf9',
 } as const
 
 // ── D11 Baseline: column name arrays (for absence assertions) ─────────────────
@@ -380,7 +380,7 @@ export const D11_DOCUMENTS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'documents_user_id_fkey',             contype: 'f', exact_def: 'FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE',           condeferrable: false, condeferred: false, confupdtype: 'a', confdeltype: 'c' },
   { name: 'documents_subject_id_fkey',          contype: 'f', exact_def: 'FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL',          condeferrable: false, condeferred: false, confupdtype: 'a', confdeltype: 'n' },
   { name: 'documents_source_recording_id_fkey', contype: 'f', exact_def: 'FOREIGN KEY (source_recording_id) REFERENCES recordings(id) ON DELETE SET NULL', condeferrable: false, condeferred: false, confupdtype: 'a', confdeltype: 'n' },
-  { name: 'documents_source_type_check',        contype: 'c', exact_def: "CHECK (source_type IS NULL OR (source_type = ANY (ARRAY['upload'::text, 'recording'::text])))" },
+  { name: 'documents_source_type_check',        contype: 'c', exact_def: "CHECK (((source_type = ANY (ARRAY['upload'::text, 'recording'::text])) OR (source_type IS NULL)))" },
 ]
 
 export const D11_DOCUMENT_ANALYSIS_CONSTRAINTS: ConstraintSpec[] = [
@@ -402,8 +402,8 @@ export const D11_GENERATION_JOBS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'generation_jobs_pkey',          contype: 'p', exact_def: 'PRIMARY KEY (id)' },
   { name: 'generation_jobs_user_id_fkey',  contype: 'f', exact_def: 'FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE',   condeferrable: false, condeferred: false, confupdtype: 'a', confdeltype: 'c' },
   { name: 'generation_jobs_document_id_fkey', contype: 'f', exact_def: 'FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE', condeferrable: false, condeferred: false, confupdtype: 'a', confdeltype: 'c' },
-  { name: 'generation_jobs_status_check',  contype: 'c', exact_def: "CHECK (status = ANY (ARRAY['queued'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'cancelled'::text]))" },
-  { name: 'generation_jobs_type_check',    contype: 'c', exact_def: "CHECK (job_type = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text]))" },
+  { name: 'generation_jobs_status_check',  contype: 'c', exact_def: "CHECK ((status = ANY (ARRAY['queued'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'cancelled'::text])))" },
+  { name: 'generation_jobs_type_check',    contype: 'c', exact_def: "CHECK ((job_type = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text])))" },
 ]
 
 // ── Post-corrective: Complete constraint sets per table ───────────────────────
@@ -416,7 +416,7 @@ export const POST_CORRECTIVE_DOCUMENTS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'documents_user_id_fkey',          contype: 'f', exact_def: 'FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE', condeferrable: false, condeferred: false },
   { name: 'documents_subject_id_fkey',       contype: 'f', exact_def: 'FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL', condeferrable: false, condeferred: false },
   { name: 'documents_source_recording_id_fkey', contype: 'f', exact_def: 'FOREIGN KEY (source_recording_id) REFERENCES recordings(id) ON DELETE SET NULL', condeferrable: false, condeferred: false },
-  { name: 'documents_source_type_check',     contype: 'c', exact_def: "CHECK (source_type IS NULL OR (source_type = ANY (ARRAY['upload'::text, 'recording'::text])))" },
+  { name: 'documents_source_type_check',     contype: 'c', exact_def: "CHECK ((source_type = ANY (ARRAY['upload'::text, 'recording'::text])) OR source_type IS NULL)" },
   { name: 'documents_id_user_id_unique',     contype: 'u', exact_def: 'UNIQUE (id, user_id)' },
 ]
 
@@ -437,8 +437,8 @@ export const POST_CORRECTIVE_STUDY_VISUALS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'study_visuals_source_job_fk',           contype: 'f', exact_def: 'FOREIGN KEY (source_job_id) REFERENCES generation_jobs(id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
   { name: 'study_visuals_source_snapshot_fk',      contype: 'f', exact_def: 'FOREIGN KEY (source_snapshot_id) REFERENCES generation_source_snapshots(id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
   { name: 'study_visuals_request_hash_format',     contype: 'c', exact_def: "CHECK (source_request_hash IS NULL OR source_request_hash ~ '^[0-9a-f]{64}$'::text)" },
-  { name: 'study_visuals_provenance_coherence',    contype: 'c', exact_def: 'CHECK (((source_job_id IS NULL) AND (source_snapshot_id IS NULL) AND (source_request_hash IS NULL) AND (publication_attempt IS NULL)) OR ((source_job_id IS NOT NULL) AND (source_snapshot_id IS NOT NULL) AND (source_request_hash IS NOT NULL) AND (publication_attempt IS NOT NULL)))' },
-  { name: 'study_visuals_publication_attempt_positive', contype: 'c', exact_def: 'CHECK ((publication_attempt IS NULL) OR (publication_attempt > 0))' },
+  { name: 'study_visuals_provenance_coherence',    contype: 'c', exact_def: 'CHECK (source_job_id IS NULL AND source_snapshot_id IS NULL AND source_request_hash IS NULL AND publication_attempt IS NULL OR source_job_id IS NOT NULL AND source_snapshot_id IS NOT NULL AND source_request_hash IS NOT NULL AND publication_attempt IS NOT NULL)' },
+  { name: 'study_visuals_publication_attempt_positive', contype: 'c', exact_def: 'CHECK (publication_attempt IS NULL OR publication_attempt > 0)' },
   { name: 'study_visuals_usage_provenance_fk',     contype: 'f', exact_def: 'FOREIGN KEY (source_job_id, user_id, document_id, source_snapshot_id, source_request_hash, publication_attempt) REFERENCES generation_job_usage(job_id, user_id, document_id, snapshot_id, request_payload_hash, attempt_count) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
 ]
 
@@ -452,10 +452,10 @@ export const POST_CORRECTIVE_GENERATION_JOBS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'generation_jobs_status_check',              contype: 'c', exact_def: "CHECK (status = ANY (ARRAY['queued'::text, 'processing'::text, 'cancel_requested'::text, 'completed'::text, 'failed'::text, 'cancelled'::text]))" },
   { name: 'generation_jobs_type_check',                contype: 'c', exact_def: "CHECK (job_type = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text]))" },
   // section 7: classification coherence
-  { name: 'generation_jobs_classification_coherence',  contype: 'c', exact_def: "CHECK (((request_classification = 'client_verified'::text) AND (request_idempotency_key IS NOT NULL) AND (request_payload_hash IS NOT NULL) AND (originating_request_id IS NOT NULL)) OR ((request_classification = 'legacy_unverified'::text) AND (request_idempotency_key IS NULL) AND (request_payload_hash IS NULL) AND (originating_request_id IS NULL)))" },
+  { name: 'generation_jobs_classification_coherence',  contype: 'c', exact_def: "CHECK (request_classification = 'client_verified'::text AND request_idempotency_key IS NOT NULL AND request_payload_hash IS NOT NULL AND originating_request_id IS NOT NULL OR request_classification = 'legacy_unverified'::text AND request_idempotency_key IS NULL AND request_payload_hash IS NULL AND originating_request_id IS NULL)" },
   // section 8: format checks
-  { name: 'generation_jobs_key_format',                contype: 'c', exact_def: "CHECK ((request_idempotency_key IS NULL) OR (request_idempotency_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text))" },
-  { name: 'generation_jobs_hash_format',               contype: 'c', exact_def: "CHECK ((request_payload_hash IS NULL) OR (request_payload_hash ~ '^[0-9a-f]{64}$'::text))" },
+  { name: 'generation_jobs_key_format',                contype: 'c', exact_def: "CHECK (request_idempotency_key IS NULL OR request_idempotency_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)" },
+  { name: 'generation_jobs_hash_format',               contype: 'c', exact_def: "CHECK (request_payload_hash IS NULL OR request_payload_hash ~ '^[0-9a-f]{64}$'::text)" },
   // section 10: composite unique
   { name: 'generation_jobs_id_user_id_unique',         contype: 'u', exact_def: 'UNIQUE (id, user_id)' },
   // section 17c: full-binding uniques and composite FKs
@@ -468,7 +468,7 @@ export const POST_CORRECTIVE_GENERATION_JOB_REQUESTS_CONSTRAINTS: ConstraintSpec
   { name: 'generation_job_requests_pkey',              contype: 'p', exact_def: 'PRIMARY KEY (id)' },
   { name: 'generation_job_requests_unique_key',        contype: 'u', exact_def: 'UNIQUE (user_id, request_idempotency_key)' },
   { name: 'generation_job_requests_user_fk',           contype: 'f', exact_def: 'FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
-  { name: 'generation_job_requests_hash_format',       contype: 'c', exact_def: "CHECK ((request_payload_hash ~ '^[0-9a-f]{64}$'::text))" },
+  { name: 'generation_job_requests_hash_format',       contype: 'c', exact_def: "CHECK (request_payload_hash ~ '^[0-9a-f]{64}$'::text)" },
   { name: 'generation_job_requests_job_type_check',    contype: 'c', exact_def: "CHECK (job_type = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text]))" },
   { name: 'generation_job_requests_binding_unique',    contype: 'u', exact_def: 'UNIQUE (user_id, request_idempotency_key, request_payload_hash, job_id, document_id, snapshot_id, job_type)' },
   { name: 'generation_job_requests_id_binding_unique', contype: 'u', exact_def: 'UNIQUE (id, user_id, request_idempotency_key, request_payload_hash, job_id, document_id, snapshot_id, job_type)' },
@@ -482,16 +482,16 @@ export const POST_CORRECTIVE_GENERATION_JOB_REQUESTS_CONSTRAINTS: ConstraintSpec
 export const POST_CORRECTIVE_GENERATION_SOURCE_SNAPSHOTS_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'generation_source_snapshots_pkey',                    contype: 'p', exact_def: 'PRIMARY KEY (id)' },
   { name: 'generation_source_snapshots_scope_unique',            contype: 'u', exact_def: 'UNIQUE (id, user_id, document_id)' },
-  { name: 'generation_source_snapshots_content_hash_format',     contype: 'c', exact_def: "CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text))" },
+  { name: 'generation_source_snapshots_content_hash_format',     contype: 'c', exact_def: "CHECK (content_hash ~ '^[0-9a-f]{64}$'::text)" },
   { name: 'generation_source_snapshots_user_fk',                 contype: 'f', exact_def: 'FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
-  { name: 'generation_source_snapshots_operation_descriptor_check', contype: 'c', exact_def: "CHECK ((jsonb_typeof(operation_descriptor) = 'object'::text) AND (operation_descriptor ?& ARRAY['schema_version'::text, 'job_type'::text, 'text_model'::text, 'image_model'::text, 'temperature'::text, 'max_tokens'::text, 'image_size'::text, 'image_count'::text, 'prompt_schema_version'::text]) AND ((operation_descriptor - ARRAY['schema_version'::text, 'job_type'::text, 'text_model'::text, 'image_model'::text, 'temperature'::text, 'max_tokens'::text, 'image_size'::text, 'image_count'::text, 'prompt_schema_version'::text]) = '{}'::jsonb) AND (jsonb_typeof(operation_descriptor -> 'schema_version'::text) = 'number'::text) AND ((operation_descriptor ->> 'job_type'::text) = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text])) AND (jsonb_typeof(operation_descriptor -> 'text_model'::text) = 'string'::text) AND (jsonb_typeof(operation_descriptor -> 'image_model'::text) = 'string'::text) AND (jsonb_typeof(operation_descriptor -> 'temperature'::text) = 'number'::text) AND (jsonb_typeof(operation_descriptor -> 'max_tokens'::text) = 'number'::text) AND (jsonb_typeof(operation_descriptor -> 'image_size'::text) = 'string'::text) AND (jsonb_typeof(operation_descriptor -> 'image_count'::text) = 'number'::text) AND (jsonb_typeof(operation_descriptor -> 'prompt_schema_version'::text) = 'number'::text))" },
+  { name: 'generation_source_snapshots_operation_descriptor_check', contype: 'c', exact_def: "CHECK (jsonb_typeof(operation_descriptor) = 'object'::text AND operation_descriptor ?& ARRAY['schema_version'::text, 'job_type'::text, 'text_model'::text, 'image_model'::text, 'temperature'::text, 'max_tokens'::text, 'image_size'::text, 'image_count'::text, 'prompt_schema_version'::text] AND (operation_descriptor - ARRAY['schema_version'::text, 'job_type'::text, 'text_model'::text, 'image_model'::text, 'temperature'::text, 'max_tokens'::text, 'image_size'::text, 'image_count'::text, 'prompt_schema_version'::text]) = '{}'::jsonb AND jsonb_typeof(operation_descriptor -> 'schema_version'::text) = 'number'::text AND ((operation_descriptor ->> 'job_type'::text) = ANY (ARRAY['visuals'::text, 'flashcards'::text, 'quiz'::text, 'revision_notes'::text, 'analysis'::text])) AND jsonb_typeof(operation_descriptor -> 'text_model'::text) = 'string'::text AND jsonb_typeof(operation_descriptor -> 'image_model'::text) = 'string'::text AND jsonb_typeof(operation_descriptor -> 'temperature'::text) = 'number'::text AND jsonb_typeof(operation_descriptor -> 'max_tokens'::text) = 'number'::text AND jsonb_typeof(operation_descriptor -> 'image_size'::text) = 'string'::text AND jsonb_typeof(operation_descriptor -> 'image_count'::text) = 'number'::text AND jsonb_typeof(operation_descriptor -> 'prompt_schema_version'::text) = 'number'::text)" },
   { name: 'generation_source_snapshots_document_scope_fk',       contype: 'f', exact_def: 'FOREIGN KEY (document_id, user_id) REFERENCES documents(id, user_id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
   { name: 'generation_source_snapshots_analysis_scope_fk',       contype: 'f', exact_def: 'FOREIGN KEY (analysis_id, document_id, user_id) REFERENCES document_analysis(id, document_id, user_id) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
 ]
 
 export const POST_CORRECTIVE_GENERATION_JOB_USAGE_CONSTRAINTS: ConstraintSpec[] = [
   { name: 'generation_job_usage_pkey',               contype: 'p', exact_def: 'PRIMARY KEY (job_id)' },
-  { name: 'generation_job_usage_counts_check',        contype: 'c', exact_def: 'CHECK ((attempt_count > 0) AND (generated_count >= 0) AND (failed_count >= 0) AND ((generated_count + failed_count) <= 10))' },
+  { name: 'generation_job_usage_counts_check',        contype: 'c', exact_def: 'CHECK (attempt_count > 0 AND generated_count >= 0 AND failed_count >= 0 AND (generated_count + failed_count) <= 10)' },
   { name: 'generation_job_usage_job_scope_fk',        contype: 'f', exact_def: 'FOREIGN KEY (job_id, user_id, document_id, snapshot_id, request_payload_hash, job_type) REFERENCES generation_jobs(id, user_id, document_id, snapshot_id, request_payload_hash, job_type) ON DELETE RESTRICT', condeferrable: false, condeferred: false },
   { name: 'generation_job_usage_publication_unique',  contype: 'u', exact_def: 'UNIQUE (job_id, user_id, document_id, snapshot_id, request_payload_hash, attempt_count)' },
 ]
@@ -589,21 +589,21 @@ export const IMMUTABILITY_TRIGGERS = [
     trigger:           'trg_snapshot_immutability',
     tgtype:            27,
     tgenabled:         'O' as const,
-    pg_get_triggerdef: `CREATE TRIGGER trg_snapshot_immutability BEFORE UPDATE OR DELETE ON public.generation_source_snapshots FOR EACH ROW EXECUTE FUNCTION public.fn_snapshot_immutability_guard()`,
+    pg_get_triggerdef: `CREATE TRIGGER trg_snapshot_immutability BEFORE DELETE OR UPDATE ON generation_source_snapshots FOR EACH ROW EXECUTE FUNCTION fn_snapshot_immutability_guard()`,
   },
   {
     table:             'generation_job_requests',
     trigger:           'trg_job_request_immutability',
     tgtype:            27,
     tgenabled:         'O' as const,
-    pg_get_triggerdef: `CREATE TRIGGER trg_job_request_immutability BEFORE UPDATE OR DELETE ON public.generation_job_requests FOR EACH ROW EXECUTE FUNCTION public.fn_snapshot_immutability_guard()`,
+    pg_get_triggerdef: `CREATE TRIGGER trg_job_request_immutability BEFORE DELETE OR UPDATE ON generation_job_requests FOR EACH ROW EXECUTE FUNCTION fn_snapshot_immutability_guard()`,
   },
   {
     table:             'generation_job_usage',
     trigger:           'trg_generation_job_usage_immutability',
     tgtype:            27,
     tgenabled:         'O' as const,
-    pg_get_triggerdef: `CREATE TRIGGER trg_generation_job_usage_immutability BEFORE UPDATE OR DELETE ON public.generation_job_usage FOR EACH ROW EXECUTE FUNCTION public.fn_snapshot_immutability_guard()`,
+    pg_get_triggerdef: `CREATE TRIGGER trg_generation_job_usage_immutability BEFORE DELETE OR UPDATE ON generation_job_usage FOR EACH ROW EXECUTE FUNCTION fn_snapshot_immutability_guard()`,
   },
 ] as const
 
@@ -622,7 +622,7 @@ export const LEDGER_TRIGGER_SPEC: TriggerSpec = {
   tgisconstraint:    true,
   condeferrable:     true,
   condeferred:       true,
-  pg_get_triggerdef: `CREATE CONSTRAINT TRIGGER trg_check_ledger_binding AFTER INSERT OR UPDATE ON public.generation_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.fn_check_ledger_binding()`,
+  pg_get_triggerdef: `CREATE CONSTRAINT TRIGGER trg_check_ledger_binding AFTER INSERT OR UPDATE ON generation_jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fn_check_ledger_binding()`,
 }
 
 // ── Post-corrective: Default ACL tuples ──────────────────────────────────────
@@ -736,29 +736,29 @@ const _ownerOnlyAcl: AclTuple[] = [
 ]
 
 export const CORRECTIVE_FUNCTION_SPECS: FunctionSpec[] = [
-  { name: 'fn_enqueue_job',              identity_args: 'uuid, text, text, jsonb',                                   provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('authenticated') },
-  { name: 'fn_claim_job',                identity_args: 'uuid, text, integer',                                        provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_heartbeat_job',            identity_args: 'uuid, text, uuid, integer, integer',                         provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_complete_job',             identity_args: 'uuid, text, uuid, integer, jsonb',                           provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_complete_and_publish_job', identity_args: 'uuid, text, uuid, integer, jsonb, text, text',               provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_fail_job',                 identity_args: 'uuid, text, uuid, integer, text, text, text',                provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_acknowledge_cancel',       identity_args: 'uuid, text, uuid, integer',                                  provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_request_job_cancel',       identity_args: 'uuid',                                                       provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('authenticated') },
-  { name: 'fn_recover_stale_jobs',       identity_args: '',                                                           provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_get_claimed_job_context',  identity_args: 'uuid, text, uuid, integer',                                  provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_get_job_safe_dto',         identity_args: 'uuid',                                                       provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('authenticated') },
-  { name: 'fn_get_active_job_for_document', identity_args: 'uuid, text',                                             provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('authenticated') },
-  { name: 'fn_get_owner_study_visuals',  identity_args: 'uuid',                                                       provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('authenticated') },
-  { name: 'fn_get_visuals_signing_manifest', identity_args: 'uuid, uuid',                                            provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _execAcl('service_role') },
-  { name: 'fn_check_ledger_binding',     identity_args: '',                                                           provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _ownerOnlyAcl },
+  { name: 'fn_enqueue_job',              identity_args: 'p_document_id uuid, p_job_type text, p_idempotency_key text, p_sanitized_input jsonb',                                                                                                                                                                                                                                               provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('authenticated') },
+  { name: 'fn_claim_job',                identity_args: 'p_job_id uuid, p_worker_id text, p_lease_duration_seconds integer',                                                                                                                                                                                                                                                                  provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_heartbeat_job',            identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer, p_lease_duration_seconds integer',                                                                                                                                                                                                                    provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_complete_job',             identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer, p_result_data jsonb',                                                                                                                                                                                                                                 provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_complete_and_publish_job', identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer, p_visuals jsonb, p_model text, p_result_code text',                                                                                                                                                                                                   provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_fail_job',                 identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer, p_error_code text, p_message_key text, p_support_reference text',                                                                                                                                                                                     provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_acknowledge_cancel',       identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer',                                                                                                                                                                                                                                                      provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_request_job_cancel',       identity_args: 'p_job_id uuid',                                                                                                                                                                                                                                                                                                                     provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('authenticated') },
+  { name: 'fn_recover_stale_jobs',       identity_args: '',                                                                                                                                                                                                                                                                                                                                   provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_get_claimed_job_context',  identity_args: 'p_job_id uuid, p_worker_id text, p_lease_token uuid, p_state_version integer',                                                                                                                                                                                                                                                      provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_get_job_safe_dto',         identity_args: 'p_job_id uuid',                                                                                                                                                                                                                                                                                                                     provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('authenticated') },
+  { name: 'fn_get_active_job_for_document', identity_args: 'p_document_id uuid, p_job_type text',                                                                                                                                                                                                                                                                                            provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('authenticated') },
+  { name: 'fn_get_owner_study_visuals',  identity_args: 'p_document_id uuid',                                                                                                                                                                                                                                                                                                                provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('authenticated') },
+  { name: 'fn_get_visuals_signing_manifest', identity_args: 'p_document_id uuid, p_user_id uuid',                                                                                                                                                                                                                                                                                            provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _execAcl('service_role') },
+  { name: 'fn_check_ledger_binding',     identity_args: '',                                                                                                                                                                                                                                                                                                                                   provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _ownerOnlyAcl },
   // fn_sha256_hex: STABLE + extensions search_path for pgcrypto (NOT empty search_path)
-  { name: 'fn_sha256_hex',               identity_args: 'text',                                                       provolatile: 's', prosecdef: true, proconfig_sp: 'search_path=extensions, pg_catalog', acl: _ownerOnlyAcl },
+  { name: 'fn_sha256_hex',               identity_args: 'p_input text',                                                                                                                                                                                                                                                                                                                      provolatile: 's', prosecdef: true, proconfig_sp: 'search_path=extensions, pg_catalog', acl: _ownerOnlyAcl },
   // IMMUTABLE serialiser helpers
-  { name: 'fn_canonical_jsonb_v1',       identity_args: 'jsonb',                                                      provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=', acl: _ownerOnlyAcl },
-  { name: 'fn_canonical_source_v1',      identity_args: 'integer, text, text, text, text, text, text, text, text, text, jsonb, text, text', provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=', acl: _ownerOnlyAcl },
-  { name: 'fn_canonical_request_v1',     identity_args: 'integer, text, text, jsonb, jsonb',                          provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=', acl: _ownerOnlyAcl },
+  { name: 'fn_canonical_jsonb_v1',       identity_args: 'p_value jsonb',                                                                                                                                                                                                                                                                                                                     provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=""', acl: _ownerOnlyAcl },
+  { name: 'fn_canonical_source_v1',      identity_args: 'p_schema_version integer, p_document_id text, p_document_title text, p_document_extracted_text text, p_document_file_type text, p_document_source_type text, p_document_created_at text, p_document_subject_id text, p_document_source_recording_id text, p_analysis_id text, p_analysis_data jsonb, p_analysis_created_at text, p_analysis_model text', provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=""', acl: _ownerOnlyAcl },
+  { name: 'fn_canonical_request_v1',     identity_args: 'p_schema_version integer, p_source_digest text, p_job_type text, p_sanitized_input jsonb, p_op_descriptor jsonb',                                                                                                                                                                                                                   provolatile: 'i', prosecdef: true, proconfig_sp: 'search_path=""', acl: _ownerOnlyAcl },
   // Trigger function: no runtime grant; VOLATILE
-  { name: 'fn_snapshot_immutability_guard', identity_args: '',                                                        provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=', acl: _ownerOnlyAcl },
+  { name: 'fn_snapshot_immutability_guard', identity_args: '',                                                                                                                                                                                                                                                                                                                                provolatile: 'v', prosecdef: true, proconfig_sp: 'search_path=""', acl: _ownerOnlyAcl },
 ]
 
 // ── Table ACL tuples ──────────────────────────────────────────────────────────

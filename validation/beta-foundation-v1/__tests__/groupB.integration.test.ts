@@ -14,6 +14,14 @@
 // Stage 3 tests expect the post-corrective state (after corrective migration).
 // Run each describe block against the appropriate pipeline stage.
 //
+// ── Stage selector ────────────────────────────────────────────────────────────
+// Set VALIDATION_SCHEMA_STAGE to run only one stage at a time:
+//   VALIDATION_SCHEMA_STAGE=stage0  →  Stage 0 tests run; Stage 1 + 3 skip
+//   VALIDATION_SCHEMA_STAGE=stage1  →  Stage 1 tests run; Stage 0 + 3 skip
+//   VALIDATION_SCHEMA_STAGE=stage3  →  Stage 3 tests run; Stage 0 + 1 skip
+// When VALIDATION_SCHEMA_STAGE is unset and RUN_DATABASE_TESTS=1, all 49 run.
+// Use scripts/run-schema-contract-tests.sh to orchestrate all three stages.
+//
 // ── Expected skip count in normal vitest run ──────────────────────────────────
 // Total: 49 tests, all skipped (RUN_DATABASE_TESTS not set).
 // Stage 0: 21  |  Stage 1: 3  |  Stage 3: 25
@@ -86,6 +94,14 @@ import {
 
 const SKIP = process.env['RUN_DATABASE_TESTS'] !== '1'
 
+// ── Stage selector ───────────────────────────────────────────────────────────
+// When VALIDATION_SCHEMA_STAGE is set, only the matching describe block runs.
+// When empty (unset), all 49 tests run if RUN_DATABASE_TESTS=1.
+const STAGE = process.env['VALIDATION_SCHEMA_STAGE'] ?? ''
+const SKIP_STAGE0 = SKIP || (STAGE !== '' && STAGE !== 'stage0')
+const SKIP_STAGE1 = SKIP || (STAGE !== '' && STAGE !== 'stage1')
+const SKIP_STAGE3 = SKIP || (STAGE !== '' && STAGE !== 'stage3')
+
 // ── Shared pg pool (created only when SKIP=false) ────────────────────────────
 
 let pgPool: PgPool | null = null
@@ -111,87 +127,87 @@ afterAll(async () => {
 
 describe('Group B — Stage 0: Pre-migration baseline', () => {
 
-  it.skipIf(SKIP)('PostgreSQL version is 17.x', async () => {
+  it.skipIf(SKIP_STAGE0)('PostgreSQL version is 17.x', async () => {
     await assertPostgresVersion(query)
   })
 
-  it.skipIf(SKIP)('server encoding is UTF-8', async () => {
+  it.skipIf(SKIP_STAGE0)('server encoding is UTF-8', async () => {
     await assertUTF8Encoding(query)
   })
 
-  it.skipIf(SKIP)('pgcrypto extension present', async () => {
+  it.skipIf(SKIP_STAGE0)('pgcrypto extension present', async () => {
     await assertPgcryptoAvailable(query)
   })
 
-  it.skipIf(SKIP)('uuid-ossp extension present', async () => {
+  it.skipIf(SKIP_STAGE0)('uuid-ossp extension present', async () => {
     await assertUuidOsspAvailable(query)
   })
 
-  it.skipIf(SKIP)('public schema owner and ACL match D11 SA10', async () => {
+  it.skipIf(SKIP_STAGE0)('public schema owner and ACL match D11 SA10', async () => {
     await assertPublicSchemaOwnerAndAcl(query)
   })
 
-  it.skipIf(SKIP)('default TABLE ACL matches D11 SA11', async () => {
+  it.skipIf(SKIP_STAGE0)('default TABLE ACL matches D11 SA11', async () => {
     await assertDefaultTableAcl(query)
   })
 
-  it.skipIf(SKIP)('default FUNCTION ACL matches D11 SA11 pre-migration state', async () => {
+  it.skipIf(SKIP_STAGE0)('default FUNCTION ACL matches D11 SA11 pre-migration state', async () => {
     await assertDefaultFunctionAcl(query)
   })
 
-  it.skipIf(SKIP)('default SEQUENCE ACL matches D11 SA11', async () => {
+  it.skipIf(SKIP_STAGE0)('default SEQUENCE ACL matches D11 SA11', async () => {
     await assertDefaultSequenceAcl(query)
   })
 
-  it.skipIf(SKIP)('documents baseline column shape (10 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE0)('documents baseline column shape (10 cols, exact ordinal/udt/default)', async () => {
     await assertDocumentsBaselineShape(query)
   })
 
-  it.skipIf(SKIP)('document_analysis baseline column shape (22 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE0)('document_analysis baseline column shape (22 cols, exact ordinal/udt/default)', async () => {
     await assertDocumentAnalysisBaselineShape(query)
   })
 
-  it.skipIf(SKIP)('documents FK delete behavior matches D11 (CASCADE/SET NULL)', async () => {
+  it.skipIf(SKIP_STAGE0)('documents FK delete behavior matches D11 (CASCADE/SET NULL)', async () => {
     await assertDocumentsFkDeleteBehavior(query)
   })
 
-  it.skipIf(SKIP)('study_visuals baseline column shape (6 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE0)('study_visuals baseline column shape (6 cols, exact ordinal/udt/default)', async () => {
     await assertStudyVisualsBaselineShape(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs absent in pre-migration state', async () => {
+  it.skipIf(SKIP_STAGE0)('generation_jobs absent in pre-migration state', async () => {
     await assertGenerationJobsAbsent(query)
   })
 
-  it.skipIf(SKIP)('RLS enabled on pre-migration tables (documents, document_analysis, study_visuals)', async () => {
+  it.skipIf(SKIP_STAGE0)('RLS enabled on pre-migration tables (documents, document_analysis, study_visuals)', async () => {
     await assertRlsEnabledOnPreMigrationTables(query)
   })
 
-  it.skipIf(SKIP)('study_visuals baseline RLS policy (study_visuals_owner_all, exact USING/WITH CHECK)', async () => {
+  it.skipIf(SKIP_STAGE0)('study_visuals baseline RLS policy (study_visuals_owner_all, exact USING/WITH CHECK)', async () => {
     await assertStudyVisualsBaselinePolicy(query)
   })
 
-  it.skipIf(SKIP)('all 5 D11 trigger functions present', async () => {
+  it.skipIf(SKIP_STAGE0)('all 5 D11 trigger functions present', async () => {
     await assertTriggerFunctions(query)
   })
 
-  it.skipIf(SKIP)('all 7 D11 trigger dependants present (exact table/event/timing)', async () => {
+  it.skipIf(SKIP_STAGE0)('all 7 D11 trigger dependants present (exact table/event/timing)', async () => {
     await assertAllTriggerDependants(query)
   })
 
-  it.skipIf(SKIP)('study-visuals bucket exists with D11 config (public=true, no size/MIME limit)', async () => {
+  it.skipIf(SKIP_STAGE0)('study-visuals bucket exists with D11 config (public=true, no size/MIME limit)', async () => {
     await assertStudyVisualsBucket(query)
   })
 
-  it.skipIf(SKIP)('study-visuals storage policies match D11 (4 permissive + 7 unrelated, exact clauses)', async () => {
+  it.skipIf(SKIP_STAGE0)('study-visuals storage policies match D11 (4 permissive + 7 unrelated, exact clauses)', async () => {
     await assertStudyVisualsStoragePolicies(query)
   })
 
-  it.skipIf(SKIP)('D11 table ACLs: arwdDxtm for postgres/anon/authenticated/service_role on 3 pre-migration tables', async () => {
+  it.skipIf(SKIP_STAGE0)('D11 table ACLs: arwdDxtm for postgres/anon/authenticated/service_role on 3 pre-migration tables', async () => {
     await assertBaselineTableAcls(query)
   })
 
-  it.skipIf(SKIP)('all corrective objects absent in pre-migration state', async () => {
+  it.skipIf(SKIP_STAGE0)('all corrective objects absent in pre-migration state', async () => {
     await assertCorrectiveObjectsAbsent(query)
   })
 
@@ -204,15 +220,15 @@ describe('Group B — Stage 0: Pre-migration baseline', () => {
 
 describe('Group B — Stage 1: Post-historical migration', () => {
 
-  it.skipIf(SKIP)('generation_jobs baseline column shape (13 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE1)('generation_jobs baseline column shape (13 cols, exact ordinal/udt/default)', async () => {
     await assertGenerationJobsBaselineShape(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs baseline RLS policy ("Users see own jobs", exact USING clause)', async () => {
+  it.skipIf(SKIP_STAGE1)('generation_jobs baseline RLS policy ("Users see own jobs", exact USING clause)', async () => {
     await assertGenerationJobsBaselinePolicy(query)
   })
 
-  it.skipIf(SKIP)('RLS enabled on all 4 target tables (documents, document_analysis, generation_jobs, study_visuals)', async () => {
+  it.skipIf(SKIP_STAGE1)('RLS enabled on all 4 target tables (documents, document_analysis, generation_jobs, study_visuals)', async () => {
     await assertRlsEnabledOnAllTargetTables(query)
   })
 
@@ -227,122 +243,122 @@ describe('Group B — Stage 3: Post-corrective', () => {
 
   // ── generation_jobs ────────────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('generation_jobs post-corrective column shape (28 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_jobs post-corrective column shape (28 cols, exact ordinal/udt/default)', async () => {
     await assertGenerationJobsPostCorrectiveShape(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs complete constraint set (12 constraints, symmetric equality, exact pg_get_constraintdef)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_jobs complete constraint set (12 constraints, symmetric equality, exact pg_get_constraintdef)', async () => {
     await assertGenerationJobsCompleteConstraints(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs table ACL: exact tuples — only postgres after section 32 REVOKE', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_jobs table ACL: exact tuples — only postgres after section 32 REVOKE', async () => {
     await assertGenerationJobsAclRevoked(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs has no RLS policies (deny-all via RLS with no policy)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_jobs has no RLS policies (deny-all via RLS with no policy)', async () => {
     await assertGenerationJobsNoPolicies(query)
   })
 
-  it.skipIf(SKIP)('generation_jobs corrective partial indexes present and old status index dropped', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_jobs corrective partial indexes present and old status index dropped', async () => {
     await assertGenerationJobsCorrectiveIndexes(query)
   })
 
   // ── generation_job_requests ────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('generation_job_requests column shape (9 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_job_requests column shape (9 cols, exact ordinal/udt/default)', async () => {
     await assertGenerationJobRequestsShape(query)
   })
 
-  it.skipIf(SKIP)('generation_job_requests complete constraint set (9 constraints, symmetric equality)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_job_requests complete constraint set (9 constraints, symmetric equality)', async () => {
     await assertGenerationJobRequestsConstraints(query)
   })
 
   // ── generation_source_snapshots ────────────────────────────────────────────
 
-  it.skipIf(SKIP)('generation_source_snapshots column shape (18 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_source_snapshots column shape (18 cols, exact ordinal/udt/default)', async () => {
     await assertGenerationSourceSnapshotsShape(query)
   })
 
-  it.skipIf(SKIP)('generation_source_snapshots complete constraint set (7 constraints, symmetric equality)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_source_snapshots complete constraint set (7 constraints, symmetric equality)', async () => {
     await assertGenerationSourceSnapshotsConstraints(query)
   })
 
   // ── generation_job_usage ───────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('generation_job_usage column shape (12 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_job_usage column shape (12 cols, exact ordinal/udt/default)', async () => {
     await assertGenerationJobUsageShape(query)
   })
 
-  it.skipIf(SKIP)('generation_job_usage complete constraint set (4 constraints, symmetric equality)', async () => {
+  it.skipIf(SKIP_STAGE3)('generation_job_usage complete constraint set (4 constraints, symmetric equality)', async () => {
     await assertGenerationJobUsageConstraints(query)
   })
 
   // ── Closed tables (generation_job_requests, generation_source_snapshots, generation_job_usage)
 
-  it.skipIf(SKIP)('closed tables exist in public schema', async () => {
+  it.skipIf(SKIP_STAGE3)('closed tables exist in public schema', async () => {
     await assertClosedTablesExist(query)
   })
 
-  it.skipIf(SKIP)('closed tables have RLS enabled', async () => {
+  it.skipIf(SKIP_STAGE3)('closed tables have RLS enabled', async () => {
     await assertClosedTablesRls(query)
   })
 
-  it.skipIf(SKIP)('closed tables ACL: exact tuples — only postgres (section 32 REVOKE ALL)', async () => {
+  it.skipIf(SKIP_STAGE3)('closed tables ACL: exact tuples — only postgres (section 32 REVOKE ALL)', async () => {
     await assertClosedTablesAclRevoked(query)
   })
 
-  it.skipIf(SKIP)('closed tables have no RLS policies (deny-all via RLS with no policy)', async () => {
+  it.skipIf(SKIP_STAGE3)('closed tables have no RLS policies (deny-all via RLS with no policy)', async () => {
     await assertClosedTablesNoPolicies(query)
   })
 
   // ── study_visuals ──────────────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('study_visuals post-corrective column shape (10 cols, exact ordinal/udt/default)', async () => {
+  it.skipIf(SKIP_STAGE3)('study_visuals post-corrective column shape (10 cols, exact ordinal/udt/default)', async () => {
     await assertStudyVisualsPostCorrectiveShape(query)
   })
 
-  it.skipIf(SKIP)('study_visuals complete constraint set (10 constraints, symmetric equality)', async () => {
+  it.skipIf(SKIP_STAGE3)('study_visuals complete constraint set (10 constraints, symmetric equality)', async () => {
     await assertStudyVisualsCompleteConstraints(query)
   })
 
-  it.skipIf(SKIP)('study_visuals table ACL: exact tuples — only postgres (section 32 REVOKE ALL)', async () => {
+  it.skipIf(SKIP_STAGE3)('study_visuals table ACL: exact tuples — only postgres (section 32 REVOKE ALL)', async () => {
     await assertStudyVisualsAclRevoked(query)
   })
 
-  it.skipIf(SKIP)('study_visuals has no RLS policies (study_visuals_owner_all dropped)', async () => {
+  it.skipIf(SKIP_STAGE3)('study_visuals has no RLS policies (study_visuals_owner_all dropped)', async () => {
     await assertStudyVisualsNoPolicies(query)
   })
 
   // ── Storage ────────────────────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('study-visuals bucket: public=false, file_size_limit=5242880, allowed_mime_types=[image/png]', async () => {
+  it.skipIf(SKIP_STAGE3)('study-visuals bucket: public=false, file_size_limit=5242880, allowed_mime_types=[image/png]', async () => {
     await assertStudyVisualsBucketPostCorrective(query)
   })
 
-  it.skipIf(SKIP)('storage.objects has exactly 9 policies with correct cmd/mode/role/USING/WITH CHECK', async () => {
+  it.skipIf(SKIP_STAGE3)('storage.objects has exactly 9 policies with correct cmd/mode/role/USING/WITH CHECK', async () => {
     await assertPostCorrectiveStoragePolicies(query)
   })
 
   // ── Corrective functions ───────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('all 20 corrective functions: exact identity_args, owner=postgres, SECURITY DEFINER, provolatile, proconfig', async () => {
+  it.skipIf(SKIP_STAGE3)('all 20 corrective functions: exact identity_args, owner=postgres, SECURITY DEFINER, provolatile, proconfig', async () => {
     await assertCorrectiveFunctionsPresent(query)
   })
 
-  it.skipIf(SKIP)('all 20 corrective function grants: exact ACL tuples (aclexplode) per function per category', async () => {
+  it.skipIf(SKIP_STAGE3)('all 20 corrective function grants: exact ACL tuples (aclexplode) per function per category', async () => {
     await assertCorrectiveFunctionGrants(query)
   })
 
   // ── Triggers ───────────────────────────────────────────────────────────────
 
-  it.skipIf(SKIP)('immutability triggers present (tgtype=27, tgenabled=O) and ledger binding trigger deferrable', async () => {
+  it.skipIf(SKIP_STAGE3)('immutability triggers present (tgtype=27, tgenabled=O) and ledger binding trigger deferrable', async () => {
     await assertImmutabilityTriggersPresent(query)
     await assertLedgerBindingTriggerPresent(query)
   })
 
   // ── Open tables (documents, document_analysis) — constraints + ACL + default ACL ──
 
-  it.skipIf(SKIP)(
+  it.skipIf(SKIP_STAGE3)(
     'documents (6 constraints symmetric) + document_analysis (6 constraints, RESTRICT FK) + both ACLs exact + default ACL locked',
     async () => {
       await assertDocumentsCompleteConstraints(query)

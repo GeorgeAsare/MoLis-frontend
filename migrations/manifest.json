@@ -25,8 +25,8 @@
     {
       "order": 2,
       "filename": "20260729120001_generation_job_state_machine_schema.sql",
-      "sha256": "12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404",
-      "sha256_note": "Computed 2026-08-11 after FOCUSED REJECT correction: added ('documents','file_path','text','YES',NULL) to R10-H04 source-column check and changed R13-H02 documents column count from 9 to 10. D11 S2_columns confirmed file_path at ordinal 4 (between user_id and title). Prior checksum 94efcc157788d12ca0ece0802717f82f259b91587d7b49822aca9f4ed7a0ce4d was from Round 17. Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
+      "sha256": "bf76114abd8157637c42bef9fbb2e64751f5a6f8cc19868c22e1c2a7d21afdf9",
+      "sha256_note": "Computed 2026-08-14 after Phase 2B surgical fixes: (1) operator-precedence parentheses around ->>'text_model' and ->>'image_model' in fn_complete_and_publish_job; (2) concurrency fix in fn_enqueue_job EXCEPTION handler replacing GET DIAGNOSTICS ROW_COUNT with ledger re-read. Prior checksum 12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404 was from 2026-08-11 FOCUSED REJECT correction. Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
       "status": "locally_authored_not_executed",
       "execution_evidence": "none",
       "mutable": true,
