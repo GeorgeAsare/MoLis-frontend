@@ -3,37 +3,40 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getActiveJobForDocument } from '@/app/actions/generationJobs'
 import { createClient } from '@/lib/supabase/client'
+import { getOrCreatePendingRequestKey, clearPendingRequestKey, setPendingRequestKey } from '@/lib/jobs/pendingJobKey'
 import { Skeleton } from '@/components/ui/Skeleton'
-import type { StudyVisualSet, StudyVisualItem } from '@/types/studyVisual'
-import type { GenerationJob } from '@/types/generationJob'
+import type { PublicVisualSet, PublicVisualItem } from '@/types/studyVisual'
+import type { JobSafeDto } from '@/lib/jobs/stateMachine'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
 import type { TutorMode } from '@/types/tutor'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Phase =
-  | 'idle'       // no visuals, no active job
-  | 'checking'   // on mount, fetching active job status
-  | 'queued'     // job created, not yet started
-  | 'processing' // actively generating
-  | 'completed'  // visuals available
-  | 'failed'     // job failed — show error + retry
-  | 'cancelled'  // cancelled — show retry
-  | 'stale'      // processing >10 min — treat as failed
+  | 'idle'           // no visuals, no active job
+  | 'checking'       // on mount, fetching active job status
+  | 'queued'         // job created, not yet started
+  | 'processing'     // actively generating
+  | 'cancel_requested' // cancellation pending, worker acknowledging
+  | 'completed'      // visuals available
+  | 'failed'         // job failed — show error + regenerate button
+  | 'cancelled'      // cancelled — show regenerate button
+  | 'retry_required' // 503 enqueue race — preserve key, show retry button
 
-const STALE_THRESHOLD_MS = 10 * 60 * 1000  // 10 minutes
-const POLL_INTERVAL_MS = 3_000
+// D13 polling: jittered exponential backoff (server-authoritative, one-in-flight).
+// Steps: 2/5/10/30s. Each step adds up to 500ms of random jitter.
+const D13_BACKOFF_STEPS_MS = [2_000, 5_000, 10_000, 30_000] as const
+const D13_JITTER_MS = 500
 
-function isStale(job: GenerationJob): boolean {
-  if (job.status !== 'processing') return false
-  const started = job.started_at ? new Date(job.started_at).getTime() : new Date(job.created_at).getTime()
-  return Date.now() - started > STALE_THRESHOLD_MS
+function d13Delay(step: number): number {
+  const base = D13_BACKOFF_STEPS_MS[Math.min(step, D13_BACKOFF_STEPS_MS.length - 1)]
+  return base + Math.random() * D13_JITTER_MS
 }
 
 interface Props {
   documentId: string
   hasExtractedText: boolean
-  initialVisuals: StudyVisualSet | null
+  initialVisuals: PublicVisualSet | null
   analysis?: DocumentAnalysis | null
   onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }
@@ -42,80 +45,175 @@ interface Props {
 
 export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onAskTutor }: Props) {
   // Completed visuals fetched from DB (initially from server props, refreshed after job completes)
-  const [visuals, setVisuals] = useState<StudyVisualSet | null>(initialVisuals)
+  const [visuals, setVisuals] = useState<PublicVisualSet | null>(initialVisuals)
   const [phase, setPhase] = useState<Phase>(initialVisuals ? 'completed' : 'checking')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
+  const pollRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollStepRef   = useRef(0)
+  const pollInFlight  = useRef(false)
+  // R7-H08: initialize from actual browser state so polling is correctly paused if the tab
+  // is already hidden or the device is already offline at the moment the component mounts.
+  const isHiddenRef   = useRef(typeof document !== 'undefined' ? document.visibilityState === 'hidden' : false)
+  const isOfflineRef  = useRef(typeof navigator !== 'undefined' ? !navigator.onLine : false)
+  const pollJobIdRef  = useRef<string | null>(null)
+  const abortCtrlRef  = useRef<AbortController | null>(null)
+  // Ref to the current pollJobStatus function — avoids a self-referential useCallback.
+  const pollFnRef     = useRef<((id: string) => Promise<void>) | null>(null)
+  // R9-H07: Generation token — a monotonically incrementing counter that changes each time
+  // startPolling() is called. Responses are discarded if their captured generation token
+  // no longer matches the current one, preventing stale in-flight responses from a previous
+  // document or polling session from updating state after a new poll generation has started.
+  const generationRef = useRef(0)
+
+  // Resolve userId once on mount for idempotency key scoping.
+  // getSession() reads from local storage — no network request.
+  useEffect(() => {
+    const supabase = createClient()
+    void supabase.auth.getSession().then(({ data }) => {
+      setUserId(data.session?.user.id ?? null)
+    })
+  }, [])
 
   function stopPolling() {
     if (pollRef.current) {
-      clearInterval(pollRef.current)
+      clearTimeout(pollRef.current)
       pollRef.current = null
     }
+    // R7-H08: abort any in-flight status request so it does not deliver a stale result
+    // after polling has been cancelled (e.g., on job completion, cancel, or unmount).
+    if (abortCtrlRef.current) {
+      abortCtrlRef.current.abort()
+      abortCtrlRef.current = null
+    }
+    pollInFlight.current = false
+    pollStepRef.current  = 0
+    pollJobIdRef.current = null
   }
 
-  // Fetch fresh visuals from Supabase after a job completes
+  function resumePollingIfActive() {
+    if (isHiddenRef.current || isOfflineRef.current) return
+    if (!pollJobIdRef.current || pollInFlight.current) return
+    if (pollRef.current) clearTimeout(pollRef.current)
+    pollRef.current = setTimeout(() => pollFnRef.current?.(pollJobIdRef.current!), 0)
+  }
+
+  // Fetch visuals with signed URLs from the server-side endpoint.
+  // The study-visuals bucket is private; direct Supabase client reads return storage_path
+  // but no displayable URL. The server-side endpoint resolves signed URLs (5-min expiry)
+  // for each generated item after verifying ownership.
   const refreshVisuals = useCallback(async () => {
-    const supabase = createClient()
-    const { data } = await supabase
-      .from('study_visuals')
-      .select('*')
-      .eq('document_id', documentId)
-      .maybeSingle()
-    if (data) setVisuals(data as StudyVisualSet)
+    try {
+      const res = await fetch(`/api/visuals/${documentId}`)
+      if (!res.ok) return
+      const data = (await res.json()) as PublicVisualSet
+      setVisuals(data)
+    } catch {
+      // Network error — keep existing visuals, don't crash
+    }
   }, [documentId])
 
-  // Poll job status from the API route
+  // D13: poll job status with jittered exponential backoff (one-in-flight, pause when hidden/offline).
   const pollJobStatus = useCallback(async (id: string) => {
+    if (pollInFlight.current) return
+    if (isHiddenRef.current || isOfflineRef.current) {
+      // Paused (tab hidden or offline) — reschedule without incrementing step.
+      pollRef.current = setTimeout(() => pollFnRef.current?.(id), d13Delay(pollStepRef.current))
+      return
+    }
+
+    // R9-H07: capture the generation token at poll-start. If stopPolling() is called and
+    // startPolling() starts a new polling generation before this response returns, the
+    // stale response is discarded rather than updating state for a different document/job.
+    const myGeneration = generationRef.current
+
+    pollInFlight.current = true
+    // R7-H08: each poll creates its own AbortController so stopPolling() can cancel the
+    // in-flight fetch (e.g., on unmount, job completion, or cancelled state).
+    const ctrl = new AbortController()
+    abortCtrlRef.current = ctrl
     try {
-      const res = await fetch(`/api/jobs/status/${id}`)
+      const res = await fetch(`/api/jobs/status/${id}`, { signal: ctrl.signal })
+
+      // Discard stale response from a previous polling generation (e.g., previous document).
+      if (generationRef.current !== myGeneration) return
+
       if (!res.ok) {
-        // Job not found — stop polling
         stopPolling()
         setPhase('failed')
         setErrorMessage('Job status could not be retrieved.')
         return
       }
-      const job = (await res.json()) as GenerationJob
+      const job = (await res.json()) as JobSafeDto
 
-      if (isStale(job)) {
-        stopPolling()
-        setPhase('stale')
-        setErrorMessage('Generation timed out after 10 minutes. Try again.')
-        return
-      }
+      // Guard again after await (generation may have changed while parsing).
+      if (generationRef.current !== myGeneration) return
 
       if (job.status === 'queued') {
         setPhase('queued')
-      } else if (job.status === 'processing') {
-        setPhase('processing')
+      } else if (job.status === 'processing' || job.status === 'cancel_requested') {
+        setPhase(job.status === 'cancel_requested' ? 'cancel_requested' : 'processing')
       } else if (job.status === 'completed') {
         stopPolling()
         await refreshVisuals()
-        setPhase('completed')
+        if (generationRef.current === myGeneration) setPhase('completed')
+        return
       } else if (job.status === 'failed') {
         stopPolling()
         setPhase('failed')
-        setErrorMessage(job.error ?? 'Visual generation failed. Please try again.')
+        setErrorMessage(job.public_message_key ?? 'Visual generation failed. Please try again.')
+        return
       } else if (job.status === 'cancelled') {
         stopPolling()
         setPhase('cancelled')
+        return
       }
-    } catch {
-      // Network error — keep polling, don't crash
+
+      // Still active — schedule next poll with advanced backoff step.
+      pollStepRef.current = Math.min(pollStepRef.current + 1, D13_BACKOFF_STEPS_MS.length - 1)
+      if (pollJobIdRef.current === id && generationRef.current === myGeneration) {
+        pollRef.current = setTimeout(() => pollFnRef.current?.(id), d13Delay(pollStepRef.current))
+      }
+    } catch (err) {
+      // Aborted intentionally (stopPolling called) — do not reschedule.
+      if (err instanceof Error && err.name === 'AbortError') return
+      // Network error — reschedule with same step (transient), but only if still current.
+      if (pollJobIdRef.current === id && generationRef.current === myGeneration) {
+        pollRef.current = setTimeout(() => pollFnRef.current?.(id), d13Delay(pollStepRef.current))
+      }
+    } finally {
+      pollInFlight.current = false
     }
   }, [refreshVisuals])
 
+  // Keep pollFnRef current so the setTimeout closures above always call the latest version.
+  useEffect(() => {
+    pollFnRef.current = pollJobStatus
+  }, [pollJobStatus])
+
   function startPolling(id: string) {
     stopPolling()
-    void pollJobStatus(id)
-    pollRef.current = setInterval(() => void pollJobStatus(id), POLL_INTERVAL_MS)
+    generationRef.current += 1
+    pollJobIdRef.current = id
+    pollStepRef.current  = 0
+    // First poll immediately, then follow backoff schedule.
+    pollRef.current = setTimeout(() => void pollJobStatus(id), d13Delay(0))
   }
 
-  // On mount: check for any active job, or skip to idle/completed
+  // When SSR provided initialVisuals, image_url is null (private bucket).
+  // Fetch signed URLs once on mount so images display immediately.
   useEffect(() => {
-    if (initialVisuals) return // already have visuals from SSR
+    if (!initialVisuals) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshVisuals()
+  // refreshVisuals is stable (useCallback with [documentId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // On mount: check for any active job, or skip to idle/completed.
+  useEffect(() => {
+    if (initialVisuals) return
 
     let cancelled = false
     void getActiveJobForDocument(documentId, 'visuals').then(job => {
@@ -127,13 +225,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
 
       setJobId(job.id)
 
-      if (isStale(job)) {
-        setPhase('stale')
-        setErrorMessage('A previous generation timed out. Try again.')
-        return
-      }
-
-      if (job.status === 'queued' || job.status === 'processing') {
+      if (job.status === 'queued' || job.status === 'processing' || job.status === 'cancel_requested') {
         setPhase(job.status)
         startPolling(job.id)
       } else if (job.status === 'completed') {
@@ -154,32 +246,107 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
   // Cleanup polling on unmount
   useEffect(() => () => stopPolling(), [])
 
+  // D13: pause polling when tab is hidden or offline; resume when visible/online.
+  // R7-H08: refs are initialized above from actual browser state at declaration time.
+  // This effect syncs them again on mount (in case SSR defaulted to false) and registers
+  // future event listeners. Becoming visible while still offline stays paused; coming
+  // online while hidden stays paused.
+  useEffect(() => {
+    // Re-sync on mount in case the ref was initialized before the browser APIs were ready.
+    isHiddenRef.current = document.visibilityState === 'hidden'
+    isOfflineRef.current = !navigator.onLine
+
+    function handleVisibility() {
+      isHiddenRef.current = document.visibilityState === 'hidden'
+      if (!isHiddenRef.current) resumePollingIfActive()
+    }
+    function handleOffline() {
+      isOfflineRef.current = true
+    }
+    function handleOnline() {
+      isOfflineRef.current = false
+      resumePollingIfActive()
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('offline', handleOffline)
+    window.addEventListener('online',  handleOnline)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('offline', handleOffline)
+      window.removeEventListener('online',  handleOnline)
+    }
+  }, [])
+
   async function handleGenerate() {
     if (phase === 'queued' || phase === 'processing') return
     setPhase('queued')
     setErrorMessage(null)
 
+    // Generate (or retrieve the pending) request key BEFORE the first network request.
+    // Scoped to (user, document, jobType) in sessionStorage so the same UUID survives
+    // network retries, duplicate-click submissions, and temporary refresh recovery.
+    // Falls back to a non-persisted UUID if the session is not available.
+    const requestKey = userId
+      ? getOrCreatePendingRequestKey(userId, documentId, 'visuals')
+      : crypto.randomUUID()
+
     try {
       const res = await fetch('/api/jobs/visuals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId }),
+        body: JSON.stringify({ documentId, requestKey }),
       })
+
+      if (res.status === 503) {
+        // Enqueue race unresolved after one server retry — key preserved in sessionStorage.
+        // Retry button calls handleGenerate (NOT handleRegenerate) so the same key is reused.
+        const body = (await res.json()) as { code?: string }
+        if (body.code === 'JOB_ENQUEUE_RETRY_REQUIRED') {
+          setPhase('retry_required')
+          setErrorMessage('Generation slot is momentarily busy. Please try again in a few seconds.')
+          return
+        }
+        throw new Error(`Request failed (HTTP 503)`)
+      }
+
       if (!res.ok) {
         const body = (await res.json()) as { error?: string }
         throw new Error(body.error ?? `Request failed (HTTP ${res.status})`)
       }
-      const { jobId: newJobId } = (await res.json()) as { jobId: string }
+
+      const { jobId: newJobId, requestKey: returnedKey } = (await res.json()) as {
+        jobId: string
+        requestKey?: string
+      }
       setJobId(newJobId)
       startPolling(newJobId)
+
+      // Sync sessionStorage with the server-confirmed key.
+      // In normal flow this is a no-op (returned key == sent key).
+      // If the server regenerated the key (e.g., client sent an invalid UUID),
+      // overwrite sessionStorage so future retries use the correct key.
+      if (returnedKey && userId && returnedKey !== requestKey) {
+        setPendingRequestKey(userId, documentId, 'visuals', returnedKey)
+      }
+      // Key is intentionally left in sessionStorage for retry resilience.
+      // Cleared only on explicit regeneration (handleRegenerate).
     } catch (err) {
       setPhase('failed')
       setErrorMessage(err instanceof Error ? err.message : 'Failed to start generation')
+      // Key preserved on failure — reused on next retry.
     }
   }
 
-  const isActive = phase === 'queued' || phase === 'processing'
-  const canRetry = phase === 'failed' || phase === 'cancelled' || phase === 'stale'
+  // Intentional regeneration: clear the stored key so a new job is created
+  // rather than the server returning the existing terminal job.
+  async function handleRegenerate() {
+    if (userId) clearPendingRequestKey(userId, documentId, 'visuals')
+    await handleGenerate()
+  }
+
+  const isActive = phase === 'queued' || phase === 'processing' || phase === 'cancel_requested'
+  const canRetry = phase === 'failed' || phase === 'cancelled'
 
   return (
     <div className="flex flex-col gap-5">
@@ -194,7 +361,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
         </div>
         {phase === 'completed' && visuals && visuals.visuals.length > 0 && (
           <button
-            onClick={handleGenerate}
+            onClick={() => void handleRegenerate()}
             disabled={isActive}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground/35 transition-colors hover:border-border hover:text-foreground/55 disabled:opacity-40"
           >
@@ -216,6 +383,24 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
         <ActiveJobState phase={phase} jobId={jobId} />
       )}
 
+      {phase === 'retry_required' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
+            <WarningIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-400/70" />
+            <div className="flex flex-col gap-0.5">
+              <p className="text-sm font-medium text-amber-400/90">Generation slot busy</p>
+              {errorMessage && <p className="text-xs leading-relaxed text-amber-400/65">{errorMessage}</p>}
+            </div>
+          </div>
+          <button
+            onClick={() => void handleGenerate()}
+            className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {canRetry && (
         <div className="flex flex-col gap-4">
           <div className="flex items-start gap-2.5 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3">
@@ -228,7 +413,7 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
             </div>
           </div>
           <button
-            onClick={handleGenerate}
+            onClick={() => void handleRegenerate()}
             className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/[0.15]"
           >
             Try Again
@@ -238,8 +423,8 @@ export function VisualsPanel({ documentId, hasExtractedText, initialVisuals, onA
 
       {phase === 'completed' && visuals && (
         visuals.visuals.length === 0
-          ? <NoVisualsState onRegenerate={handleGenerate} />
-          : <VisualsGrid visuals={visuals.visuals} onRegenerate={handleGenerate} onAskTutor={onAskTutor} />
+          ? <NoVisualsState onRegenerate={handleRegenerate} />
+          : <VisualsGrid visuals={visuals.visuals} onRegenerate={handleRegenerate} onAskTutor={onAskTutor} />
       )}
     </div>
   )
@@ -342,7 +527,7 @@ function VisualsGrid({
   onRegenerate,
   onAskTutor,
 }: {
-  visuals: StudyVisualItem[]
+  visuals: PublicVisualItem[]
   onRegenerate: () => void
   onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
@@ -372,7 +557,7 @@ function VisualsGrid({
 
 // ── VisualCard ────────────────────────────────────────────────────────────────
 
-function VisualCard({ visual, onAskTutor }: { visual: StudyVisualItem; onAskTutor?: (prompt: string, mode?: TutorMode) => void }) {
+function VisualCard({ visual, onAskTutor }: { visual: PublicVisualItem; onAskTutor?: (prompt: string, mode?: TutorMode) => void }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
       <div className="relative flex h-52 items-center justify-center bg-gradient-to-br from-primary/10 via-background to-muted/30">

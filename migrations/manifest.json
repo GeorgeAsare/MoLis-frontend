@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "authority": "MoLis repository migration history; never Supabase service migration tables",
+  "generated_at": "2026-08-11",
+  "sole_authority": true,
+  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated 2026-08-11 for FOCUSED REJECT correction: added file_path column to R10-H04 documents source-column list (D11 ordinal 4, text, nullable); updated R13-H02 documents exact column count from 9 to 10. Prior Round 17 corrections remain: R17-H01 TABLE default ACL; R17-H02 post-upload deadline checks; R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL; R17-M01/M02 PNG/canonical text.",
+  "execution_evidence": {
+    "database_execution_exists": false,
+    "storage_execution_exists": false,
+    "statement": "The corrective migration is locally authored and has not been executed in any database or Storage environment. auth.schema_migrations, realtime.schema_migrations, and storage.migrations are provider-owned and are not MoLis application migration evidence."
+  },
+  "fresh_project": {
+    "deterministic_from_repository_today": false,
+    "blocking_reason": "The canonical prerequisite active-product schema predating beta_foundation_v1.sql is not yet represented by a version-controlled MoLis migration. Fresh-project execution remains blocked until that prerequisite baseline is captured and reviewed."
+  },
+  "ordered_migrations": [
+    {
+      "order": 1,
+      "filename": "beta_foundation_v1.sql",
+      "sha256": "d2bc6e2cd63c243d8577b3b4785fb8638e13466472917cbd79203e3442fdb60b",
+      "status": "immutable_historical_baseline",
+      "execution_evidence": "Catalogue consistent with this file; exact historical execution unproven by a repository-owned application migration ledger. D11 read-only inspections confirmed the live schema shape matches what this file would produce.",
+      "mutable": false
+    },
+    {
+      "order": 2,
+      "filename": "20260729120001_generation_job_state_machine_schema.sql",
+      "sha256": "bf76114abd8157637c42bef9fbb2e64751f5a6f8cc19868c22e1c2a7d21afdf9",
+      "sha256_note": "Computed 2026-08-14 after Phase 2B surgical fixes: (1) operator-precedence parentheses around ->>'text_model' and ->>'image_model' in fn_complete_and_publish_job; (2) concurrency fix in fn_enqueue_job EXCEPTION handler replacing GET DIAGNOSTICS ROW_COUNT with ledger re-read. Prior checksum 12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404 was from 2026-08-11 FOCUSED REJECT correction. Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "none",
+      "mutable": true,
+      "maintenance_contract": "When separately approved, apply after beta_foundation_v1.sql in one maintenance operation with enqueueing disabled until migration and verification complete. No execution is currently authorised."
+    }
+  ]
+}
