@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { ThemeProvider } from '@/components/theme/ThemeProvider'
 import './globals.css'
 
 const geistSans = Geist({
@@ -18,15 +19,33 @@ export const metadata: Metadata = {
     'The AI-powered operating system for students — combining study, wellbeing, finance, productivity, and intelligent automation in one platform.',
 }
 
+const themeScript = `
+(function(){
+  try{
+    var t=localStorage.getItem('molis-theme');
+    var r=document.documentElement;
+    r.classList.remove('light','dark');
+    if(t==='dark'){r.classList.add('dark');}
+    else if(t==='light'){r.classList.add('light');}
+    else{if(window.matchMedia('(prefers-color-scheme: dark)').matches){r.classList.add('dark');}}
+  }catch(e){}
+})();
+`.trim()
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} bg-background text-foreground antialiased`}
       >
-        {children}
+        <ThemeProvider>
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   )

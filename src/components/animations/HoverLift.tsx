@@ -1,7 +1,8 @@
 'use client'
 
-import { motion } from 'motion/react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { ReactNode } from 'react'
+import { DURATION, EASING } from '@/lib/motion'
 
 interface Props {
   children: ReactNode
@@ -10,24 +11,22 @@ interface Props {
   scale?: number
 }
 
-export function HoverLift({
-  children,
-  className,
-  lift = -3,
-  scale = 1.01,
-}: Props) {
+export function HoverLift({ children, className, lift = -3, scale = 1.01 }: Props) {
+  const reduced = useReducedMotion()
+
   return (
     <motion.div
       className={className}
-      whileHover={{
-        y: lift,
-        scale,
-        transition: { duration: 0.18, ease: [0.21, 0.47, 0.32, 0.98] },
-      }}
-      whileTap={{
-        scale: 0.98,
-        transition: { duration: 0.1 },
-      }}
+      whileHover={
+        reduced
+          ? undefined
+          : { y: lift, scale, transition: { duration: DURATION.fast, ease: EASING.smooth } }
+      }
+      whileTap={
+        reduced
+          ? undefined
+          : { scale: 0.98, transition: { duration: DURATION.instant } }
+      }
     >
       {children}
     </motion.div>

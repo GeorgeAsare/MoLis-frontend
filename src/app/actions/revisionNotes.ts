@@ -35,7 +35,7 @@ function buildPromptFromAnalysis(title: string, analysis: DocumentAnalysis): str
   const examText = analysis.likely_exam_topics
     .map(
       (t) =>
-        `- ${t.topic} [${t.importance}] — tested via: ${t.question_types.join(', ')}`,
+        `- ${t.topic} [${t.importance}]: ${t.question_types.join(', ')}`,
     )
     .join('\n')
 
@@ -49,7 +49,25 @@ function buildPromptFromAnalysis(title: string, analysis: DocumentAnalysis): str
         analysis.formulas.map((f) => `- ${f.expression}: ${f.description}`).join('\n')
       : ''
 
-  return `Generate comprehensive revision notes for "${title}".
+  const relationshipsText =
+    analysis.relationships.length > 0
+      ? '\n\nCONCEPT RELATIONSHIPS:\n' +
+        analysis.relationships
+          .slice(0, 10)
+          .map((r) => `- ${r.from_concept} ${r.relationship} ${r.to_concept}`)
+          .join('\n')
+      : ''
+
+  const bulletRule = [
+    '- bullet_points: 10-16 explanatory revision notes grounded in the source material. Each note MUST:',
+    '  - state WHAT a concept is, HOW it works, or WHY it matters using the source\'s own terminology',
+    '  - be a complete factual sentence that a student can revise from directly without the original document',
+    '  - NEVER begin with an imperative verb such as Define, Explain, Discuss, Evaluate, Demonstrate, Consider, or Describe',
+    '  - draw on the concept relationships and examples above where relevant to connect ideas',
+    '  - include at least one note per high-importance exam topic',
+  ].join('\n')
+
+  return `Generate revision notes for "${title}" that a student can revise from directly.
 
 SUBJECT: ${analysis.subject_area} | DIFFICULTY: ${analysis.difficulty_level} | EST. STUDY: ${analysis.estimated_study_minutes ?? '?'} min
 
@@ -60,29 +78,29 @@ KEY CONCEPTS (${analysis.key_concepts.length} total):
 ${conceptsText}
 
 DEFINITIONS (${analysis.definitions.length} terms):
-${defsText}${formulasText}
+${defsText}${formulasText}${relationshipsText}
 
 EXAM TOPICS (focus areas):
 ${examText}
 
-EXAMPLES:
+EXAMPLES FROM SOURCE:
 ${examplesText}
 
 Respond with ONLY a JSON object in this exact schema:
 {
   "title": "Descriptive title for these revision notes",
-  "summary": "4–6 sentence paragraph covering the subject, main topics, arguments, and conclusions",
+  "summary": "4-6 sentence paragraph covering the subject, main topics, arguments, and conclusions — written as an orientation for the student, not a task list",
   "key_concepts": ["concept 1", "concept 2"],
-  "bullet_points": ["Revision point starting with an action verb", "..."],
+  "bullet_points": ["Inheritance allows a subclass to reuse and extend the attributes and methods of a base class, reducing code duplication.", "..."],
   "definitions": [{ "term": "Term", "definition": "Clear, precise definition" }],
-  "exam_tips": ["Specific exam technique tip for this topic", "..."]
+  "exam_tips": ["Specific exam preparation tip for this topic, e.g. what question types appear and how to approach them", "..."]
 }
 
 Rules:
 - key_concepts: cover ALL concepts from the analysis (especially core and supporting importance)
-- bullet_points: 12–20 concise, exam-focused points — start each with an action verb; include one point per exam topic
+${bulletRule}
 - definitions: include ALL definitions from the analysis plus any additional key terms
-- exam_tips: 4–7 actionable tips specific to this subject and its likely exam topics`
+- exam_tips: 4-7 practical preparation strategies — include what types of exam questions appear on this topic and how to approach them; avoid generic advice like "review your notes"`
 }
 
 function buildPromptFromText(title: string, text: string): string {
@@ -90,6 +108,13 @@ function buildPromptFromText(title: string, text: string): string {
     text.length > TEXT_CHAR_LIMIT
       ? text.slice(0, TEXT_CHAR_LIMIT) + '\n\n[Content truncated for processing]'
       : text
+
+  const bulletRule = [
+    '- bullet_points: 10-16 explanatory revision statements grounded in the document. Each note MUST:',
+    '  - state WHAT a concept is, HOW it works, or WHY it matters in this subject',
+    '  - be a complete factual sentence a student can revise from directly',
+    '  - NEVER begin with an imperative verb such as Define, Explain, Discuss, Evaluate, Demonstrate, or Consider',
+  ].join('\n')
 
   return `Generate revision notes for this document.
 
@@ -101,18 +126,18 @@ ${body}
 Respond with ONLY a JSON object in this exact schema:
 {
   "title": "Descriptive title for these revision notes",
-  "summary": "3–5 sentence paragraph covering main topics, arguments, and conclusions",
+  "summary": "3-5 sentence paragraph covering main topics, arguments, and conclusions — written as a student orientation, not a task list",
   "key_concepts": ["concept 1", "concept 2"],
-  "bullet_points": ["Revision point starting with an action verb", "..."],
+  "bullet_points": ["Inheritance allows a subclass to reuse and extend the attributes and methods of a base class.", "..."],
   "definitions": [{ "term": "Term", "definition": "Clear, precise definition" }],
-  "exam_tips": ["Specific exam technique tip for this topic", "..."]
+  "exam_tips": ["Specific exam preparation strategy for this topic, e.g. what question types appear and how to approach them", "..."]
 }
 
 Rules:
-- key_concepts: 6–10 most important concepts or themes
-- bullet_points: 10–18 concise, exam-focused points; start each with an action verb
-- definitions: 5–10 key terms with precise academic definitions
-- exam_tips: 3–6 actionable tips specific to this subject matter`
+- key_concepts: 6-10 most important concepts or themes
+${bulletRule}
+- definitions: 5-10 key terms with precise definitions from the source material
+- exam_tips: 3-6 practical preparation strategies — what types of questions appear and how to approach them`
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
