@@ -8,7 +8,11 @@ import type { Quiz } from '@/types/quiz'
 import type { FlashcardSet } from '@/types/flashcard'
 import type { ConceptMastery } from '@/types/conceptMastery'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
-import type { StudyVisualSet } from '@/types/studyVisual'
+import type { PublicVisualSet } from '@/types/studyVisual'
+
+// R8-H04: fn_get_owner_study_visuals now strips storage_path and image_prompt at
+// the database boundary, so the RPC already returns the PublicVisualSet shape.
+// No client-side sanitization is needed here.
 import type { FlashcardProgress } from '@/types/flashcardProgress'
 import type { QuizAttempt } from '@/types/quizAttempt'
 import type { TutorMessage } from '@/types/tutor'
@@ -112,12 +116,7 @@ export default async function StudySetPage({
       .eq('user_id', user.id)
       .maybeSingle(),
     getStudyPlan(id).catch(() => null),
-    supabase
-      .from('study_visuals')
-      .select('*')
-      .eq('document_id', id)
-      .eq('user_id', user.id)
-      .maybeSingle(),
+    supabase.rpc('fn_get_owner_study_visuals', { p_document_id: id }),
     supabase
       .from('flashcard_progress')
       .select('*')
@@ -150,7 +149,7 @@ export default async function StudySetPage({
       initialNotes={(notesResult.data as RevisionNote | null) ?? null}
       initialQuiz={(quizResult.data as Quiz | null) ?? null}
       initialFlashcards={(flashcardsResult.data as FlashcardSet | null) ?? null}
-      initialVisuals={(visualsResult.data as StudyVisualSet | null) ?? null}
+      initialVisuals={(visualsResult.data as PublicVisualSet | null)}
       weakTopics={(weakTopicsResult.data as ConceptMastery[] | null) ?? []}
       initialAnalysis={(analysisResult.data as DocumentAnalysis | null) ?? null}
       initialStudyPlan={studyPlan}
