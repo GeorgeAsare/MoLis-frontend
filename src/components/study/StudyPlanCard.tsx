@@ -1,5 +1,6 @@
 'use client'
 
+import { cn } from '@/lib/utils'
 import type { StudyPlan, StudyBlock, BlockType, LinkedAction } from '@/types/studyPlan'
 import type { TutorMode } from '@/types/tutor'
 
@@ -12,87 +13,56 @@ interface Props {
 const BLOCK_LABELS: Record<BlockType, string> = {
   relearn:    'Relearn',
   review:     'Review',
-  flashcards: 'Flashcards',
+  flashcards: 'Practice',
   quiz:       'Quiz',
   mixed:      'Mixed',
 }
 
-const BLOCK_STYLE: Record<BlockType, string> = {
-  relearn:    'border-red-500/20 bg-red-500/[0.07] text-red-400',
-  review:     'border-amber-500/20 bg-amber-500/[0.07] text-amber-400',
-  flashcards: 'border-sky-500/20 bg-sky-500/[0.07] text-sky-400',
-  quiz:       'border-violet-500/20 bg-violet-500/[0.07] text-violet-400',
-  mixed:      'border-border bg-muted/40 text-foreground/40',
+const BLOCK_TYPE_STYLE: Record<BlockType, string> = {
+  relearn:    'text-red-400/75',
+  review:     'text-amber-400/75',
+  flashcards: 'text-foreground/35',
+  quiz:       'text-foreground/35',
+  mixed:      'text-foreground/28',
 }
 
 const ACTION_LABEL: Record<LinkedAction, string> = {
   notes:      'Open Notes',
-  flashcards: 'Open Flashcards',
-  quiz:       'Take Quiz',
-  tutor:      'Ask Tutor',
-}
-
-function readinessBadge(score: number): string {
-  if (score >= 70) return 'border-emerald-500/25 bg-emerald-500/[0.07] text-emerald-400'
-  if (score >= 40) return 'border-amber-500/20 bg-amber-500/[0.07] text-amber-400'
-  return 'border-red-500/20 bg-red-500/[0.06] text-red-400'
+  flashcards: 'Flashcards',
+  quiz:       'Quiz',
+  tutor:      'Ask MoLis',
 }
 
 export function StudyPlanCard({ plan, onNavigate, onAskTutor }: Props) {
   if (plan.study_blocks.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card px-6 py-10 text-center">
-        <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-muted/40">
-          <PlanIcon className="h-5 w-5 text-foreground/20" />
-        </div>
-        <p className="text-sm font-medium text-foreground/45">No study plan yet</p>
-        <p className="mt-1 max-w-xs text-xs leading-relaxed text-foreground/28">
-          Complete text extraction, then take a quiz or review flashcards to generate your adaptive plan.
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/15 px-6 py-10 text-center">
+        <p className="text-[14px] font-medium text-foreground/40">No study path yet</p>
+        <p className="mt-1 max-w-xs text-[13px] leading-relaxed text-foreground/28">
+          Take a quiz or review flashcards to generate your adaptive study path.
         </p>
       </div>
     )
   }
 
+  const totalMinutes = plan.study_blocks.reduce((sum, b) => sum + b.estimated_minutes, 0)
+
   return (
-    <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-5">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/40">
-            <PlanIcon className="h-4 w-4 text-foreground/35" />
-          </div>
-          <div>
-            <p className="text-[13px] font-semibold text-foreground/75">Adaptive Study Plan</p>
-            <p className="text-[11px] text-foreground/35">Based on your current mastery</p>
-          </div>
-        </div>
-        <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums ${readinessBadge(plan.overall_exam_readiness)}`}>
-          {plan.overall_exam_readiness}% ready
+    <div className="flex flex-col gap-4">
+      {/* Section heading */}
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-[17px] font-bold tracking-[-0.025em] text-foreground/80">
+          Today&apos;s study path
+        </h3>
+        <span className="shrink-0 text-[13px] text-foreground/35">
+          {totalMinutes} min · {plan.study_blocks.length} concept{plan.study_blocks.length !== 1 ? 's' : ''}
         </span>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-2">
-        <StatCell label="Session" value={`${plan.estimated_session_minutes} min`} />
-        <StatCell label="Expected gain" value={`+${plan.expected_improvement}% readiness`} />
-      </div>
-
-      {/* Why this plan */}
-      <p className="text-xs leading-relaxed text-foreground/45">{plan.why_this_plan}</p>
-
-      {/* Recommended next action */}
-      <div className="rounded-xl border border-primary/18 bg-primary/[0.05] px-3.5 py-2.5">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/25">Start here</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-foreground/55">{plan.recommended_next_action}</p>
-      </div>
-
-      {/* Study blocks */}
-      <div className="flex flex-col gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">
-          Study blocks · {plan.study_blocks.length}
-        </p>
+      {/* Path rows */}
+      <div className="flex flex-col divide-y divide-border/30">
         {plan.study_blocks.map((block, i) => (
-          <BlockRow
+          <PathRow
             key={block.concept_id}
             block={block}
             index={i}
@@ -105,9 +75,9 @@ export function StudyPlanCard({ plan, onNavigate, onAskTutor }: Props) {
   )
 }
 
-// ── BlockRow ──────────────────────────────────────────────────────────────────
+// ── PathRow ───────────────────────────────────────────────────────────────────
 
-function BlockRow({
+function PathRow({
   block,
   index,
   onNavigate,
@@ -119,60 +89,46 @@ function BlockRow({
   onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-border bg-muted/25 px-3.5 py-3">
+    <div className="flex items-start gap-4 py-4">
       {/* Step number */}
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted/60 text-[10px] font-semibold text-foreground/30 tabular-nums">
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted/60 text-[11px] font-bold text-foreground/35 tabular-nums">
         {index + 1}
       </span>
 
       {/* Info */}
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <p className="text-[13px] font-medium text-foreground/72">{block.concept_title}</p>
-          <span className={`rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide ${BLOCK_STYLE[block.block_type]}`}>
-            {BLOCK_LABELS[block.block_type]}
-          </span>
-        </div>
-        <p className="text-[11px] leading-relaxed text-foreground/35">{block.reason}</p>
-        <p className="text-[11px] text-foreground/22">{block.estimated_minutes} min</p>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <p className="text-[15px] font-semibold text-foreground/82">{block.concept_title}</p>
+        <p className={cn('text-[13px]', BLOCK_TYPE_STYLE[block.block_type])}>
+          {BLOCK_LABELS[block.block_type]}
+          <span className="text-foreground/32"> · {block.estimated_minutes} min</span>
+        </p>
+        {block.reason && (
+          <p className="mt-0.5 text-[12px] leading-relaxed text-foreground/48">{block.reason}</p>
+        )}
       </div>
 
-      {/* Action buttons */}
-      <div className="mt-0.5 flex shrink-0 flex-col gap-1">
+      {/* Actions */}
+      <div className="flex shrink-0 flex-col items-end gap-2">
         <button
           onClick={() => onNavigate(block.linked_action)}
-          className="rounded-lg border border-primary/22 bg-primary/[0.07] px-2.5 py-1.5 text-[11px] font-medium text-primary transition-colors hover:border-primary/40 hover:bg-primary/[0.12]"
+          className="rounded-lg border border-primary/22 bg-primary/[0.08] px-3 py-1.5 text-[12px] font-semibold text-primary transition-colors hover:border-primary/38 hover:bg-primary/[0.13]"
         >
           {ACTION_LABEL[block.linked_action]}
         </button>
-        {onAskTutor && (
+        {onAskTutor && block.linked_action !== 'tutor' && (
           <button
-            onClick={() => onAskTutor(`Help me understand "${block.concept_title}". ${block.reason}`, 'explain')}
-            className="rounded-lg border border-border bg-muted/30 px-2.5 py-1.5 text-[11px] font-medium text-foreground/40 transition-colors hover:border-foreground/15 hover:text-foreground/60"
+            onClick={() =>
+              onAskTutor(
+                `Help me understand "${block.concept_title}". ${block.reason}`,
+                'explain',
+              )
+            }
+            className="flex items-center gap-1 text-[12px] font-medium text-foreground/48 transition-colors hover:text-primary/80"
           >
-            Ask Tutor
+            Ask MoLis
           </button>
         )}
       </div>
     </div>
-  )
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function StatCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-muted/30 px-3 py-2">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">{label}</span>
-      <span className="text-xs font-medium text-foreground/55">{value}</span>
-    </div>
-  )
-}
-
-function PlanIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
-    </svg>
   )
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import Link from 'next/link'
+import { cn } from '@/lib/utils'
 import { ExtractionPanel } from '@/components/study/ExtractionPanel'
 import { RevisionNotesPanel } from '@/components/study/RevisionNotesPanel'
 import { QuizPanel } from '@/components/study/QuizPanel'
@@ -10,14 +11,13 @@ import { VisualsPanel } from '@/components/study/VisualsPanel'
 import { StudyPlanCard } from '@/components/study/StudyPlanCard'
 import { TutorPanel } from '@/components/study/TutorPanel'
 import type { TutorPanelHandle } from '@/components/study/TutorPanel'
-// WeakTopicsPanel is rendered inline in WeakTopicsTab below, not as a standalone component
 import type { RevisionNote } from '@/types/revisionNotes'
 import type { Quiz } from '@/types/quiz'
 import type { FlashcardSet } from '@/types/flashcard'
 import type { PublicVisualSet } from '@/types/studyVisual'
 import type { ConceptMastery } from '@/types/conceptMastery'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
-import type { StudyPlan } from '@/types/studyPlan'
+import type { StudyPlan, LinkedAction } from '@/types/studyPlan'
 import type { FlashcardProgress } from '@/types/flashcardProgress'
 import type { QuizAttempt } from '@/types/quizAttempt'
 import type { TutorMessage, TutorMode } from '@/types/tutor'
@@ -50,24 +50,48 @@ interface Props {
   initialTab: string
 }
 
+// Internal tab IDs are stable — used for URL deep linking, panel mounting, and
+// all child component callbacks. Modes are the student-facing navigation layer.
 type Tab = 'overview' | 'notes' | 'flashcards' | 'quiz' | 'visuals' | 'weak-topics' | 'tutor'
+type Mode = 'learn' | 'practice' | 'visualise' | 'review' | 'ask'
 
-const TABS: { id: Tab; label: string; icon: (p: { className?: string }) => React.ReactElement }[] = [
-  { id: 'overview',    label: 'Overview',    icon: HomeIcon },
-  { id: 'notes',       label: 'Notes',       icon: NotesIcon },
-  { id: 'flashcards',  label: 'Flashcards',  icon: CardsIcon },
-  { id: 'quiz',        label: 'Quiz',        icon: QuizIcon },
-  { id: 'visuals',     label: 'Visuals',     icon: VisualIcon },
-  { id: 'weak-topics', label: 'Weak Topics', icon: TargetIcon },
-  { id: 'tutor',       label: 'AI Tutor',    icon: TutorIcon },
+const MODES: Array<{
+  id: Mode
+  label: string
+  icon: (p: { className?: string }) => React.ReactElement
+}> = [
+  { id: 'learn',     label: 'Learn',      icon: BookOpenIcon },
+  { id: 'practice',  label: 'Practice',   icon: CardsIcon },
+  { id: 'visualise', label: 'Visualise',  icon: VisualIcon },
+  { id: 'review',    label: 'Review',     icon: ArrowPathIcon },
+  { id: 'ask',       label: 'Ask MoLis',  icon: TutorIcon },
 ]
+
+function tabToMode(tab: Tab): Mode {
+  if (tab === 'overview' || tab === 'notes') return 'learn'
+  if (tab === 'flashcards' || tab === 'quiz') return 'practice'
+  if (tab === 'visuals') return 'visualise'
+  if (tab === 'weak-topics') return 'review'
+  return 'ask'
+}
+
+function modeToDefaultTab(mode: Mode): Tab {
+  switch (mode) {
+    case 'learn':     return 'overview'
+    case 'practice':  return 'flashcards'
+    case 'visualise': return 'visuals'
+    case 'review':    return 'weak-topics'
+    case 'ask':       return 'tutor'
+  }
+}
 
 function validateTab(raw: string): Tab {
   const valid: Tab[] = ['overview', 'notes', 'flashcards', 'quiz', 'visuals', 'weak-topics', 'tutor']
   return valid.includes(raw as Tab) ? (raw as Tab) : 'overview'
 }
 
-function fileTypeLabel(mimeType: string): string {
+function fileTypeLabel(mimeType: string, sourceType?: string | null): string {
+  if (mimeType === 'transcript' || sourceType === 'recording') return 'Lecture recording'
   const map: Record<string, string> = {
     'application/pdf': 'PDF',
     'application/msword': 'Word',
@@ -75,17 +99,8 @@ function fileTypeLabel(mimeType: string): string {
     'text/plain': 'Text',
     'application/vnd.ms-powerpoint': 'PowerPoint',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
-    'transcript': 'Lecture Recording',
   }
   return map[mimeType] ?? (mimeType.split('/')[1]?.toUpperCase() || 'File')
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })
 }
 
 // ── StudySetView ──────────────────────────────────────────────────────────────
@@ -126,7 +141,6 @@ export function StudySetView({
   }
 
   function openTutorWithPrompt(prompt: string, mode?: TutorMode) {
-    // Switch tab without resetting scroll — prefill() handles scroll to composer
     setActiveTab('tutor')
     const url = new URL(window.location.href)
     url.searchParams.set('tab', 'tutor')
@@ -135,58 +149,130 @@ export function StudySetView({
   }
 
   const hasExtractedText = !!doc.extracted_text
+  const activeMode = tabToMode(activeTab)
+
+  // Header computed values
+  const isRecordingDoc = doc.file_type === 'transcript' || doc.source_type === 'recording'
+  const srcLabel = fileTypeLabel(doc.file_type, doc.source_type)
+  const headerConcepts = initialAnalysis?.key_concepts ?? []
+  const headerHighExam = initialAnalysis?.likely_exam_topics.filter(t => t.importance === 'high') ?? []
+  const readiness = initialStudyPlan?.overall_exam_readiness
+  const readinessBadgeStyle = readiness == null
+    ? ''
+    : readiness >= 70
+      ? 'border-emerald-500/22 bg-emerald-500/[0.07] text-emerald-500'
+      : readiness >= 40
+        ? 'border-amber-500/22 bg-amber-500/[0.07] text-amber-500'
+        : 'border-primary/22 bg-primary/[0.07] text-primary'
 
   return (
     <div className="flex flex-1 flex-col min-h-0">
 
-      {/* ── Breadcrumb ──────────────────────────────────────────────────────── */}
-      <nav className="flex shrink-0 items-center gap-2 border-b border-border px-6 py-3.5">
-        <Link
-          href="/dashboard/study"
-          className="text-sm text-foreground/40 transition-colors hover:text-foreground/60"
-        >
-          Study
-        </Link>
-        <ChevronIcon className="h-3 w-3 text-foreground/20" />
-        <span className="truncate text-sm text-foreground/70">{doc.title}</span>
-      </nav>
+      {/* ── Unified Workspace Header ─────────────────────────────────────────── */}
+      <div className="shrink-0 border-b border-border bg-card/60">
+        <div className="mx-auto max-w-[1200px] px-5 sm:px-8">
 
-      {/* ── Tab bar ─────────────────────────────────────────────────────────── */}
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-4 scrollbar-hide">
-        {TABS.map((tab) => {
-          const isActive = activeTab === tab.id
-          return (
-            <button
-              key={tab.id}
-              onClick={() => handleTabChange(tab.id)}
-              className={[
-                'flex shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors',
-                isActive
-                  ? 'text-foreground/85'
-                  : 'text-foreground/30 hover:text-foreground/55',
-              ].join(' ')}
+          {/* Back navigation */}
+          <div className="pt-4 pb-3.5">
+            <Link
+              href="/dashboard/study"
+              className="inline-flex items-center gap-1.5 text-[13px] text-foreground/38 transition-colors duration-150 hover:text-foreground/65"
             >
-              <tab.icon
-                className={`h-3.5 w-3.5 ${isActive ? 'text-primary' : 'text-foreground/25'}`}
-              />
-              {tab.label}
-              {isActive && (
-                <span className="ml-0.5 h-0.5 w-full" />
-              )}
-            </button>
-          )
-        })}
-      </div>
+              <ArrowLeftIcon className="h-3.5 w-3.5" />
+              Library
+            </Link>
+          </div>
 
-      {/* Active tab indicator — rendered below the bar */}
-      <div className="relative -mt-px h-px shrink-0 overflow-hidden">
-        <div
-          className="absolute h-px bg-primary/60 transition-all duration-300"
-          style={{
-            left: `${(TABS.findIndex((t) => t.id === activeTab) / TABS.length) * 100}%`,
-            width: `${(1 / TABS.length) * 100}%`,
-          }}
-        />
+          {/* Source identity */}
+          <div className="pb-5 flex items-start gap-4">
+            <div className={cn(
+              'mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border',
+              isRecordingDoc
+                ? 'border-primary/20 bg-primary/[0.07]'
+                : 'border-foreground/[0.08] bg-muted/55'
+            )}>
+              {isRecordingDoc
+                ? <MicIcon className="h-[18px] w-[18px] text-primary/65" />
+                : <BookOpenIcon className="h-[18px] w-[18px] text-foreground/35" />
+              }
+            </div>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-[1.5rem] font-bold tracking-[-0.03em] leading-tight text-foreground/90 sm:text-[1.75rem]">
+                {doc.title}
+              </h1>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                {initialAnalysis?.subject_area && (
+                  <span className="text-[14px] font-medium text-foreground/55">{initialAnalysis.subject_area}</span>
+                )}
+                <span className="text-[13px] text-foreground/32">{srcLabel}</span>
+                {readiness != null && (
+                  <span className={cn('rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums', readinessBadgeStyle)}>
+                    {readiness === 0 ? 'Exam readiness · Starting' : `Exam readiness ${readiness}%`}
+                  </span>
+                )}
+              </div>
+              {(headerConcepts.length > 0 || headerHighExam.length > 0 || initialAnalysis?.estimated_study_minutes) && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-3.5 gap-y-0.5 text-[12px] text-foreground/30">
+                  {headerConcepts.length > 0 && (
+                    <span>{headerConcepts.length} concept{headerConcepts.length !== 1 ? 's' : ''}</span>
+                  )}
+                  {headerHighExam.length > 0 && (
+                    <span>{headerHighExam.length} exam area{headerHighExam.length !== 1 ? 's' : ''}</span>
+                  )}
+                  {initialAnalysis?.estimated_study_minutes != null && (
+                    <span>~{initialAnalysis.estimated_study_minutes}m to study</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Primary mode navigation — underline indicator style */}
+          <div className="flex items-end overflow-x-auto scrollbar-hide -mb-px">
+            {MODES.map((mode) => {
+              const isActive = activeMode === mode.id
+              return (
+                <button
+                  key={mode.id}
+                  onClick={() => handleTabChange(modeToDefaultTab(mode.id))}
+                  className={cn(
+                    'flex shrink-0 items-center gap-2 border-b-2 px-4 py-3.5 text-[15px] font-semibold transition-colors duration-150',
+                    isActive
+                      ? 'border-primary text-foreground/90'
+                      : 'border-transparent text-foreground/50 hover:border-foreground/14 hover:text-foreground/68'
+                  )}
+                >
+                  <mode.icon className={cn(
+                    'h-[19px] w-[19px] transition-colors duration-150',
+                    isActive ? 'text-primary' : 'text-foreground/35'
+                  )} />
+                  {mode.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Sub-navigation — only for Learn and Practice */}
+        {(activeMode === 'learn' || activeMode === 'practice') && (
+          <div className="border-t border-border/40 bg-muted/20">
+            <div className="mx-auto max-w-[1200px] px-5 sm:px-8">
+              <div className="flex items-center gap-0.5 py-1.5">
+                {activeMode === 'learn' ? (
+                  <>
+                    <SubTab active={activeTab === 'overview'} onClick={() => handleTabChange('overview')}>Overview</SubTab>
+                    <SubTab active={activeTab === 'notes'} onClick={() => handleTabChange('notes')}>Notes</SubTab>
+                  </>
+                ) : (
+                  <>
+                    <SubTab active={activeTab === 'flashcards'} onClick={() => handleTabChange('flashcards')}>Flashcards</SubTab>
+                    <SubTab active={activeTab === 'quiz'} onClick={() => handleTabChange('quiz')}>Quiz</SubTab>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Tab content ─────────────────────────────────────────────────────── */}
@@ -198,7 +284,7 @@ export function StudySetView({
         className={`flex-1 min-h-0 ${activeTab === 'tutor' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'}`}
         ref={scrollContainerRef}
       >
-        <div className={`mx-auto max-w-3xl px-6 ${activeTab === 'tutor' ? 'flex-1 min-h-0 flex flex-col' : 'py-8'}`}>
+        <div className={`mx-auto max-w-[1200px] px-5 sm:px-8 ${activeTab === 'tutor' ? 'flex-1 min-h-0 flex flex-col' : 'py-8'}`}>
 
           <div className={activeTab !== 'overview' ? 'hidden' : ''}>
             <OverviewTab
@@ -209,6 +295,7 @@ export function StudySetView({
               hasQuiz={!!initialQuiz}
               hasVisuals={!!initialVisuals}
               weakTopicsCount={liveWeakTopics.length}
+              weakTopics={liveWeakTopics}
               analysis={initialAnalysis}
               studyPlan={initialStudyPlan}
               quizAttempt={initialQuizAttempt}
@@ -262,7 +349,11 @@ export function StudySetView({
           </div>
 
           <div className={activeTab !== 'weak-topics' ? 'hidden' : ''}>
-            <WeakTopicsTab weakTopics={liveWeakTopics} onGoToQuiz={() => handleTabChange('quiz')} onAskTutor={openTutorWithPrompt} />
+            <WeakTopicsTab
+              weakTopics={liveWeakTopics}
+              onGoToQuiz={() => handleTabChange('quiz')}
+              onAskTutor={openTutorWithPrompt}
+            />
           </div>
 
           <div className={activeTab !== 'tutor' ? 'hidden' : 'flex-1 min-h-0 flex flex-col pt-4'}>
@@ -280,6 +371,32 @@ export function StudySetView({
   )
 }
 
+// ── SubTab ────────────────────────────────────────────────────────────────────
+
+function SubTab({
+  children,
+  active,
+  onClick,
+}: {
+  children: React.ReactNode
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'rounded-md px-3 py-1.5 text-[13px] font-semibold transition-colors duration-150',
+        active
+          ? 'bg-primary/[0.09] text-primary'
+          : 'text-foreground/38 hover:bg-foreground/[0.04] hover:text-foreground/62'
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
 // ── OverviewTab ───────────────────────────────────────────────────────────────
 
 interface OverviewProps {
@@ -290,6 +407,7 @@ interface OverviewProps {
   hasQuiz: boolean
   hasVisuals: boolean
   weakTopicsCount: number
+  weakTopics: ConceptMastery[]
   analysis: DocumentAnalysis | null
   studyPlan: StudyPlan | null
   quizAttempt: QuizAttempt | null
@@ -307,6 +425,7 @@ function OverviewTab({
   hasQuiz,
   hasVisuals,
   weakTopicsCount,
+  weakTopics,
   analysis,
   studyPlan,
   quizAttempt,
@@ -315,265 +434,329 @@ function OverviewTab({
   onNavigate,
   onAskTutor,
 }: OverviewProps) {
-  const label = fileTypeLabel(doc.file_type)
-  const date = formatDate(doc.created_at)
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
-  const features: {
-    tab: Tab
-    label: string
-    description: string
-    done: boolean
-    icon: (p: { className?: string }) => React.ReactElement
-    accentColor: string
-  }[] = [
-    {
-      tab: 'notes',
-      label: 'Notes',
-      description: 'AI-structured revision notes with key concepts and exam tips',
-      done: hasNotes,
-      icon: NotesIcon,
-      accentColor: 'violet',
-    },
-    {
-      tab: 'flashcards',
-      label: 'Flashcards',
-      description: 'Study cards with flip animation, know/learning tracking',
-      done: hasFlashcards,
-      icon: CardsIcon,
-      accentColor: 'sky',
-    },
-    {
-      tab: 'quiz',
-      label: 'Quiz',
-      description: 'Multiple choice, true/false, short answer and scenario questions',
-      done: hasQuiz,
-      icon: QuizIcon,
-      accentColor: 'amber',
-    },
-    {
-      tab: 'visuals',
-      label: 'Visuals',
-      description: 'Educational diagrams for visual topics in your document',
-      done: hasVisuals,
-      icon: VisualIcon,
-      accentColor: 'emerald',
-    },
-  ]
+  const isAnalysed = !!doc.extracted_text && analysis !== null
+  const isRecording = doc.file_type === 'transcript' || doc.source_type === 'recording'
 
-  const accentClasses: Record<string, { border: string; bg: string; text: string }> = {
-    violet: { border: 'border-primary/20', bg: 'bg-primary/10', text: 'text-primary' },
-    sky: { border: 'border-sky-500/25', bg: 'bg-sky-500/[0.08]', text: 'text-sky-400' },
-    amber: { border: 'border-amber-500/25', bg: 'bg-amber-500/[0.08]', text: 'text-amber-400' },
-    emerald: { border: 'border-emerald-500/25', bg: 'bg-emerald-500/[0.08]', text: 'text-emerald-400' },
+  // Analysis intelligence
+  const allConcepts = analysis?.key_concepts ?? []
+  const coreConcepts = allConcepts.filter(k => k.importance === 'core')
+  const displayConcepts = coreConcepts.length >= 5 ? coreConcepts : allConcepts
+  const highExamTopics = analysis?.likely_exam_topics.filter(t => t.importance === 'high') ?? []
+  const medExamTopics = analysis?.likely_exam_topics.filter(t => t.importance === 'medium') ?? []
+  const allExamTopics = [...highExamTopics, ...medExamTopics]
+  const defCount = analysis?.definitions.length ?? 0
+  const formulaCount = analysis?.formulas.length ?? 0
+  const misconceptionCount = analysis?.misconceptions.length ?? 0
+
+  // Primary next action CTA
+  const actionLabels: Record<LinkedAction, string> = {
+    notes: 'Open your notes',
+    flashcards: 'Practice flashcards',
+    quiz: 'Take the quiz',
+    tutor: 'Ask MoLis',
+  }
+  const firstBlock = studyPlan?.study_blocks[0]
+  const nextActionText =
+    studyPlan?.recommended_next_action ??
+    (weakTopicsCount > 0
+      ? `Review ${weakTopicsCount} concept${weakTopicsCount !== 1 ? 's' : ''} that need attention`
+      : hasFlashcards
+        ? 'Practice your flashcards'
+        : hasNotes
+          ? 'Read your revision notes'
+          : 'Generate your study tools to get started')
+
+  let ctaLabel = 'Start learning'
+  let ctaAction: Tab = 'notes'
+  if (studyPlan && firstBlock) {
+    ctaLabel = actionLabels[firstBlock.linked_action]
+    ctaAction = firstBlock.linked_action as Tab
+  } else if (weakTopicsCount > 0) {
+    ctaLabel = 'Review weak areas'
+    ctaAction = 'weak-topics'
+  } else if (hasFlashcards) {
+    ctaLabel = 'Practice flashcards'
+    ctaAction = 'flashcards'
+  } else if (hasNotes) {
+    ctaLabel = 'Read your notes'
+    ctaAction = 'notes'
   }
 
-  return (
-    <div className="flex flex-col gap-8">
+  const wordCount = doc.extracted_text
+    ? doc.extracted_text.trim().split(/\s+/).filter(Boolean).length
+    : 0
 
-      {/* Document card */}
-      <div className="flex items-center gap-4 rounded-2xl border border-border bg-card p-5">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10">
-          <FileIcon className="h-6 w-6 text-primary" />
+  const showNextAction =
+    isAnalysed &&
+    (studyPlan != null || weakTopicsCount > 0 || hasNotes || hasFlashcards || hasQuiz || hasVisuals)
+
+  // Session summary — precomputed prose parts
+  const sessionParts: string[] = []
+  if (quizAttempt) {
+    if (quizAttempt.phase === 'review' && quizAttempt.score_correct != null) {
+      sessionParts.push(`Quiz — ${quizAttempt.score_correct} of ${quizAttempt.score_total} correct`)
+    } else {
+      sessionParts.push('Quiz in progress')
+    }
+  }
+  if (flashcardProgress) {
+    const known = flashcardProgress.card_statuses.filter(s => s === 'known').length
+    const total = flashcardProgress.card_statuses.length
+    sessionParts.push(`${known} of ${total} cards learned`)
+  }
+  if (tutorMessageCount > 0) {
+    sessionParts.push(`${tutorMessageCount} MoLis ${tutorMessageCount === 1 ? 'conversation' : 'conversations'}`)
+  }
+  const hasSession = sessionParts.length > 0
+
+  return (
+    <div className="flex flex-col gap-10">
+
+      {/* ── SOURCE PREPARATION (unprocessed only) ───────────────────────────── */}
+      {!isAnalysed && (
+        <div className="flex flex-col gap-3">
+          <p className="text-[12px] font-bold uppercase tracking-[0.1em] text-foreground/28">
+            Preparing your source
+          </p>
+          <ExtractionPanel
+            documentId={doc.id}
+            fileType={doc.file_type}
+            signedUrl={signedUrl}
+            initialExtractedText={doc.extracted_text ?? null}
+            hasAnalysis={!!analysis}
+            sourceType={doc.source_type}
+          />
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="truncate text-sm font-semibold text-foreground/80">{doc.title}</p>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-[11px] text-foreground/40">
-              {label}
-            </span>
-            <span className="text-[11px] text-foreground/25">{date}</span>
-            {signedUrl && (
-              <a
-                href={signedUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-primary/60 underline underline-offset-2 transition-colors hover:text-primary/90"
-              >
-                View file
-              </a>
+      )}
+
+      {/* ── PRIMARY NEXT ACTION ─────────────────────────────────────────────── */}
+      {showNextAction && (
+        <div className="rounded-2xl bg-card p-7 shadow-[var(--shadow-md)]">
+          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-primary/70">
+            Next step
+          </p>
+          <p className="mt-3 text-[1.25rem] font-bold tracking-[-0.025em] leading-snug text-foreground/88">
+            {nextActionText}
+          </p>
+          {studyPlan?.why_this_plan && (
+            <p className="mt-2 text-[14px] leading-relaxed text-foreground/45">
+              {studyPlan.why_this_plan}
+            </p>
+          )}
+          {studyPlan && (
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-[13px] text-foreground/35">
+              <span>{studyPlan.estimated_session_minutes} min session</span>
+              <span aria-hidden="true">·</span>
+              <span>+{studyPlan.expected_improvement}% readiness gain</span>
+            </div>
+          )}
+          <button
+            onClick={() => onNavigate(ctaAction)}
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-[14px] font-bold text-white shadow-[var(--shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:opacity-90 active:translate-y-0"
+          >
+            {ctaLabel}
+            <ArrowRightIcon className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* ── WHAT MOLIS UNDERSTOOD ───────────────────────────────────────────── */}
+      {analysis && (
+        <div className="flex flex-col gap-6 rounded-2xl bg-muted/25 p-6 sm:p-7">
+          <div>
+            <h3 className="text-[18px] font-bold tracking-[-0.02em] text-foreground/80">
+              What MoLis understood
+            </h3>
+            {isRecording && (
+              <p className="mt-0.5 text-[13px] text-foreground/38">From your lecture recording</p>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Text extraction + analysis */}
-      <div className="flex flex-col gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
-          Step 1 — Extract &amp; Analyse
-        </p>
-        <ExtractionPanel
-          documentId={doc.id}
-          fileType={doc.file_type}
-          signedUrl={signedUrl}
-          initialExtractedText={doc.extracted_text ?? null}
-          hasAnalysis={!!analysis}
-          sourceType={doc.source_type}
-        />
-        {/* Analysis metadata card */}
-        {analysis && (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <AnalysisStat label="Subject" value={analysis.subject_area} />
-            <AnalysisStat
-              label="Difficulty"
-              value={analysis.difficulty_level.charAt(0).toUpperCase() + analysis.difficulty_level.slice(1)}
-            />
-            <AnalysisStat
-              label="Study Time"
-              value={analysis.estimated_study_minutes ? `~${analysis.estimated_study_minutes}m` : '—'}
-            />
-            <AnalysisStat
-              label="Sections"
-              value={`${analysis.sections.length} section${analysis.sections.length !== 1 ? 's' : ''}`}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Study tools grid */}
-      <div className="flex flex-col gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
-          Step 2 — Study Tools
-        </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {features.map((f) => {
-            const ac = accentClasses[f.accentColor]
-            return (
-              <button
-                key={f.tab}
-                onClick={() => onNavigate(f.tab)}
-                className={[
-                  'group flex flex-col gap-3 rounded-2xl border p-5 text-left transition-all',
-                  f.done
-                    ? `${ac.border} ${ac.bg}`
-                    : 'border-border bg-card hover:border-foreground/15 hover:bg-muted/50',
-                ].join(' ')}
-              >
-                <div className="flex items-center justify-between">
-                  <div
-                    className={[
-                      'flex h-9 w-9 items-center justify-center rounded-xl border',
-                      f.done ? `${ac.border} ${ac.bg}` : 'border-border bg-muted/40',
-                    ].join(' ')}
-                  >
-                    <f.icon
-                      className={`h-4.5 w-4.5 ${f.done ? ac.text : 'text-foreground/25'}`}
-                    />
+          {/* Key concepts — numbered list, max 6 */}
+          {displayConcepts.length > 0 && (
+            <div>
+              <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.12em] text-foreground/30">
+                Key concepts
+              </p>
+              <div className="flex flex-col gap-2">
+                {displayConcepts.slice(0, 6).map((c, i) => (
+                  <div key={c.concept} className="flex items-baseline gap-3">
+                    <span className="min-w-[18px] text-[11px] font-semibold tabular-nums text-foreground/22">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span className="text-[15px] font-medium text-foreground/75">{c.concept}</span>
                   </div>
-                  {f.done ? (
-                    <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-semibold ${ac.border} ${ac.bg} ${ac.text}`}>
-                      Ready
-                    </span>
-                  ) : (
-                    <span className="rounded-full border border-border bg-muted/40 px-2.5 py-0.5 text-[10px] text-foreground/25">
-                      Not generated
-                    </span>
-                  )}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground/75">{f.label}</p>
-                  <p className="mt-1 text-xs leading-relaxed text-foreground/30">{f.description}</p>
-                </div>
-                <p className={`text-xs font-medium ${f.done ? ac.text : 'text-foreground/30'} group-hover:underline underline-offset-2`}>
-                  {f.done ? `Open ${f.label} →` : `Generate ${f.label} →`}
-                </p>
-              </button>
-            )
-          })}
-        </div>
-      </div>
+                ))}
+              </div>
+              {allConcepts.length > 6 && (
+                <button
+                  onClick={() => onNavigate('notes')}
+                  className="mt-3 text-[13px] text-foreground/40 transition-colors hover:text-foreground/65 hover:underline underline-offset-2"
+                >
+                  View all {allConcepts.length} concepts →
+                </button>
+              )}
+            </div>
+          )}
 
-      {/* Session at a glance */}
-      {(quizAttempt || flashcardProgress || tutorMessageCount > 0) && (
-        <div className="flex flex-col gap-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
-            Session Summary
+          {/* Exam priorities — chips, max 4 */}
+          {allExamTopics.length > 0 && (
+            <div>
+              <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.12em] text-foreground/30">
+                Exam priorities
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {allExamTopics.slice(0, 4).map(t => (
+                  <span
+                    key={t.topic}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-[13px] font-medium',
+                      t.importance === 'high'
+                        ? 'border-amber-500/20 bg-amber-500/[0.07] text-amber-500/90'
+                        : 'border-foreground/[0.09] bg-card/60 text-foreground/55',
+                    )}
+                  >
+                    {t.topic}
+                  </span>
+                ))}
+                {allExamTopics.length > 4 && (
+                  <span className="flex items-center px-1 text-[13px] text-foreground/30">
+                    +{allExamTopics.length - 4} more
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Source intelligence — inline counts */}
+          {(defCount > 0 || formulaCount > 0 || misconceptionCount > 0) && (
+            <p className="text-[13px] leading-relaxed text-foreground/40">
+              {[
+                defCount > 0 ? `${defCount} definition${defCount !== 1 ? 's' : ''}` : '',
+                formulaCount > 0 ? `${formulaCount} formula${formulaCount !== 1 ? 's' : ''}` : '',
+                misconceptionCount > 0 ? `${misconceptionCount} common misconception${misconceptionCount !== 1 ? 's' : ''}` : '',
+              ].filter(Boolean).join(' · ')}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── WEAK TOPICS CALLOUT ─────────────────────────────────────────────── */}
+      {weakTopicsCount > 0 && (
+        <button
+          onClick={() => onNavigate('weak-topics')}
+          className="flex items-center gap-4 rounded-2xl border border-primary/14 bg-primary/[0.04] p-5 text-left transition-all duration-150 hover:border-primary/24 hover:bg-primary/[0.07] hover:-translate-y-px"
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/[0.08]">
+            <TargetIcon className="h-5 w-5 text-primary/70" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[15px] font-semibold text-foreground/75">
+              {weakTopicsCount} concept{weakTopicsCount !== 1 ? 's' : ''} due for review
+            </p>
+            {weakTopics[0] && (
+              <p className="mt-0.5 text-[13px] text-foreground/38">
+                Starting with {weakTopics[0].concept_title}
+              </p>
+            )}
+          </div>
+          <ChevronIcon className="h-4 w-4 shrink-0 text-foreground/22" />
+        </button>
+      )}
+
+      {/* ── TODAY'S STUDY PATH ──────────────────────────────────────────────── */}
+      {studyPlan && studyPlan.study_blocks.length > 0 && (
+        <StudyPlanCard
+          plan={studyPlan}
+          onNavigate={(tab) => onNavigate(tab as Tab)}
+          onAskTutor={onAskTutor}
+        />
+      )}
+
+      {/* ── YOUR SESSION ────────────────────────────────────────────────────── */}
+      {hasSession && (
+        <div className="rounded-xl border border-border/40 bg-muted/20 px-5 py-4">
+          <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-foreground/30">Your session</p>
+          <p className="mt-1.5 text-[14px] leading-relaxed text-foreground/58">
+            {sessionParts.join(' · ')}
           </p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="mt-3 flex flex-wrap gap-3">
             {quizAttempt && (
               <button
                 onClick={() => onNavigate('quiz')}
-                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+                className="text-[13px] font-medium text-primary/60 transition-colors hover:text-primary/85"
               >
-                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">Quiz</span>
-                {quizAttempt.phase === 'review' && quizAttempt.score_correct != null ? (
-                  <span className="text-sm font-semibold text-foreground/70">
-                    {quizAttempt.score_correct}/{quizAttempt.score_total}
-                    <span className="ml-1 text-xs font-normal text-foreground/35">correct</span>
-                  </span>
-                ) : (
-                  <span className="text-sm font-medium text-amber-400/80">In progress</span>
-                )}
+                {quizAttempt.phase === 'review' ? 'Review quiz →' : 'Continue quiz →'}
               </button>
             )}
             {flashcardProgress && (
               <button
                 onClick={() => onNavigate('flashcards')}
-                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+                className="text-[13px] font-medium text-primary/60 transition-colors hover:text-primary/85"
               >
-                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">Flashcards</span>
-                {(() => {
-                  const known = flashcardProgress.card_statuses.filter(s => s === 'known').length
-                  const total = flashcardProgress.card_statuses.length
-                  return (
-                    <span className="text-sm font-semibold text-foreground/70">
-                      {known}/{total}
-                      <span className="ml-1 text-xs font-normal text-foreground/35">known</span>
-                    </span>
-                  )
-                })()}
+                Practice flashcards →
               </button>
             )}
             {tutorMessageCount > 0 && (
               <button
                 onClick={() => onNavigate('tutor')}
-                className="flex flex-col gap-1 rounded-xl border border-border bg-muted/25 px-3.5 py-3 text-left transition-colors hover:border-border hover:bg-muted/40"
+                className="text-[13px] font-medium text-primary/60 transition-colors hover:text-primary/85"
               >
-                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/22">AI Tutor</span>
-                <span className="text-sm font-semibold text-foreground/70">
-                  {tutorMessageCount}
-                  <span className="ml-1 text-xs font-normal text-foreground/35">
-                    {tutorMessageCount === 1 ? 'message' : 'messages'}
-                  </span>
-                </span>
+                Open MoLis →
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* Adaptive Study Plan */}
-      {studyPlan && (
-        <div className="flex flex-col gap-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-foreground/20">
-            Step 3 — Today&apos;s Study Plan
-          </p>
-          <StudyPlanCard
-            plan={studyPlan}
-            onNavigate={(tab) => onNavigate(tab as Tab)}
-            onAskTutor={onAskTutor}
-          />
+      {/* ── SOURCE DETAILS (collapsed) ──────────────────────────────────────── */}
+      {isAnalysed && (
+        <div className="flex flex-col gap-3 border-t border-border/30 pt-5">
+          <button
+            onClick={() => setDetailsOpen(v => !v)}
+            className="flex items-center gap-2 self-start text-[13px] font-medium text-foreground/40 transition-colors hover:text-foreground/65"
+          >
+            <span>Source details</span>
+            <ChevronDownIcon className={cn(
+              'h-3.5 w-3.5 transition-transform duration-200',
+              detailsOpen && 'rotate-180',
+            )} />
+          </button>
+          {detailsOpen && (
+            <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-muted/20 p-4">
+              <div className="flex flex-wrap items-center gap-3 text-[13px] text-foreground/38">
+                {wordCount > 0 && (
+                  <span>{wordCount.toLocaleString()} words</span>
+                )}
+                {analysis?.difficulty_level && (
+                  <span>
+                    {analysis.difficulty_level.charAt(0).toUpperCase() + analysis.difficulty_level.slice(1)}
+                  </span>
+                )}
+                {signedUrl && (
+                  <a
+                    href={signedUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2 transition-colors hover:text-foreground/62"
+                  >
+                    View original source
+                  </a>
+                )}
+              </div>
+              <ExtractionPanel
+                documentId={doc.id}
+                fileType={doc.file_type}
+                signedUrl={signedUrl}
+                initialExtractedText={doc.extracted_text ?? null}
+                hasAnalysis={!!analysis}
+                sourceType={doc.source_type}
+              />
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Weak topics summary */}
-      {weakTopicsCount > 0 && (
-        <button
-          onClick={() => onNavigate('weak-topics')}
-          className="flex items-center gap-4 rounded-2xl border border-red-500/15 bg-red-500/[0.04] p-5 text-left transition-colors hover:border-red-500/25 hover:bg-red-500/[0.07]"
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-red-500/20 bg-red-500/[0.08]">
-            <TargetIcon className="h-5 w-5 text-red-400/80" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-foreground/70">
-              {weakTopicsCount} Weak Topic{weakTopicsCount !== 1 ? 's' : ''} Detected
-            </p>
-            <p className="mt-0.5 text-xs text-foreground/30">
-              Review areas where you scored low in quizzes
-            </p>
-          </div>
-          <ChevronIcon className="h-4 w-4 shrink-0 text-foreground/20" />
-        </button>
       )}
     </div>
   )
@@ -649,10 +832,8 @@ function WeakTopicsTab({
             key={cm.id}
             className="flex items-start gap-3.5 rounded-xl border border-border bg-card px-4 py-3.5"
           >
-            <span
-              className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${dotStyle(cm.mastery_score)}`}
-            />
-            <div className="flex-1 min-w-0">
+            <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${dotStyle(cm.mastery_score)}`} />
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground/75">{cm.concept_title}</p>
               <p className="mt-0.5 text-xs text-foreground/30">
                 {relativeTime(cm.last_reviewed_at)} · {cm.incorrect_count}{' '}
@@ -660,16 +841,14 @@ function WeakTopicsTab({
               </p>
             </div>
             <div className="flex shrink-0 flex-col items-end gap-1.5">
-              <span
-                className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${masteryStyle(cm.mastery_score)}`}
-              >
+              <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${masteryStyle(cm.mastery_score)}`}>
                 {cm.mastery_score}%
               </span>
               <button
                 onClick={() => onAskTutor(`Explain why I'm weak in "${cm.concept_title}" and help me fix it.`, 'weak_topic')}
                 className="rounded-md border border-primary/20 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-medium text-primary/70 transition-colors hover:border-primary/35 hover:bg-primary/[0.11]"
               >
-                Ask Tutor
+                Ask MoLis
               </button>
             </div>
           </div>
@@ -686,33 +865,36 @@ function WeakTopicsTab({
   )
 }
 
-// ── AnalysisStat ──────────────────────────────────────────────────────────────
-
-function AnalysisStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-muted/30 px-3 py-2">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/20">
-        {label}
-      </span>
-      <span className="truncate text-xs font-medium text-foreground/55">{value}</span>
-    </div>
-  )
-}
-
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
-function HomeIcon({ className }: { className?: string }) {
+function BookOpenIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
     </svg>
   )
 }
 
-function NotesIcon({ className }: { className?: string }) {
+function ArrowPathIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+    </svg>
+  )
+}
+
+function ArrowLeftIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
+    </svg>
+  )
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
     </svg>
   )
 }
@@ -744,15 +926,7 @@ function VisualIcon({ className }: { className?: string }) {
 function TargetIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-    </svg>
-  )
-}
-
-function FileIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
     </svg>
   )
 }
@@ -769,6 +943,22 @@ function TutorIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 9.75a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 0 1 .778-.332 48.294 48.294 0 0 0 5.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
+    </svg>
+  )
+}
+
+function ArrowRightIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
     </svg>
   )
 }

@@ -18,7 +18,7 @@ export default function AgentsPage() {
           <div className="group flex flex-col gap-3 rounded-2xl border border-border bg-card/60 p-5 transition-colors hover:border-foreground/15 hover:bg-card/90 cursor-pointer">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-primary/25 bg-primary/[0.08] transition-colors group-hover:border-primary/40">
-                <MicIcon className="h-4.5 w-4.5 text-primary" />
+                <MicIcon className="h-[18px] w-[18px] text-primary" />
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground/80">Lecture Recorder</p>
@@ -38,7 +38,7 @@ export default function AgentsPage() {
         <div className="flex flex-col gap-3 rounded-2xl border border-border/50 bg-card/30 p-5 opacity-50">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-muted/30">
-              <WebIcon className="h-4.5 w-4.5 text-foreground/25" />
+              <WebIcon className="h-[18px] w-[18px] text-foreground/25" />
             </div>
             <div>
               <p className="text-sm font-semibold text-foreground/40">Web Research Agent</p>

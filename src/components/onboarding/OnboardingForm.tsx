@@ -2,8 +2,10 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { motion, AnimatePresence } from 'motion/react'
 import { saveOnboardingProfile } from '@/app/actions/onboarding'
 import { Button } from '@/components/ui/Button'
+import { DURATION, EASING } from '@/lib/motion'
 import type {
   AcademicProfile,
   DashboardFocus,
@@ -327,25 +329,39 @@ export function OnboardingForm() {
   return (
     <div className="flex flex-col gap-6">
 
-      {/* Progress bar */}
+      {/* Progress indicator */}
       <div>
-        <div className="flex gap-1 mb-2">
+        {/* Track */}
+        <div className="flex gap-1 mb-3">
           {STEP_LABELS.map((_, i) => (
             <div
               key={i}
-              className={`h-0.5 flex-1 rounded-full transition-colors duration-300 ${
-                i < step ? 'bg-primary' : i === step ? 'bg-primary/60' : 'bg-foreground/10'
+              className={`h-[3px] flex-1 rounded-full transition-all duration-400 ${
+                i < step ? 'bg-primary' : i === step ? 'bg-primary/55' : 'bg-foreground/[0.08]'
               }`}
             />
           ))}
         </div>
-        <p className="text-xs text-foreground/30">
-          Step {step + 1} of {TOTAL_STEPS} — {STEP_LABELS[step]}
-        </p>
+        {/* Step label */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-bold tabular-nums text-primary">
+            {step + 1}<span className="font-normal text-foreground/25">/{TOTAL_STEPS}</span>
+          </span>
+          <span className="text-[11px] text-foreground/25">—</span>
+          <span className="text-[11px] font-medium text-foreground/48">{STEP_LABELS[step]}</span>
+        </div>
       </div>
 
-      {/* Step content */}
-      <div className="rounded-2xl border border-border bg-card/60 p-6 flex flex-col gap-5">
+      {/* Step content — animated transitions */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={step}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: DURATION.fast, ease: EASING.smooth }}
+          className="rounded-2xl border border-border bg-card/60 p-6 flex flex-col gap-5"
+        >
 
         {/* ── Step 1: Education ── */}
         {step === 0 && (
@@ -607,10 +623,10 @@ export function OnboardingForm() {
           <div className="flex flex-col gap-4">
             <div>
               <p className="text-base font-semibold text-foreground/85 mb-0.5">
-                Your MoLis profile is ready
+                You&apos;re ready.
               </p>
               <p className="text-xs text-foreground/35">
-                Review your personalisation profile below. You can update these at any time from Setup.
+                MoLis has built your initial study profile. It will continue adapting as you study. You can update this at any time from Settings.
               </p>
             </div>
 
@@ -707,7 +723,8 @@ export function OnboardingForm() {
             )}
           </div>
         )}
-      </div>
+        </motion.div>
+      </AnimatePresence>
 
       {/* Navigation footer */}
       <div className="flex items-center justify-between">
@@ -730,7 +747,7 @@ export function OnboardingForm() {
           )}
           {step === TOTAL_STEPS - 1 ? (
             <Button onClick={handleFinish} loading={saving || navigating} disabled={saving || navigating}>
-              {saving ? 'Saving setup…' : navigating ? 'Setup saved. Taking you to dashboard…' : 'Finish setup'}
+              {saving ? 'Setting up your profile…' : navigating ? 'Profile saved. Taking you to MoLis…' : 'Enter MoLis'}
             </Button>
           ) : (
             <Button onClick={goNext} disabled={!canContinue()}>

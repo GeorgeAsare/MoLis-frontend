@@ -1,9 +1,8 @@
 'use client'
 
-import { motion } from 'motion/react'
+import { motion, useReducedMotion } from 'motion/react'
 import type { ReactNode } from 'react'
-
-// ── Shared item variants — import and apply to direct children ────────────
+import { DURATION, EASING, STAGGER } from '@/lib/motion'
 
 export const staggerItemVariants = {
   hidden: { opacity: 0, y: 12 },
@@ -11,13 +10,19 @@ export const staggerItemVariants = {
     opacity: 1,
     y: 0,
     transition: {
-      duration: 0.4,
-      ease: [0.21, 0.47, 0.32, 0.98] as [number, number, number, number],
+      duration: DURATION.slow,
+      ease: EASING.smooth as [number, number, number, number],
     },
   },
 }
 
-// ── Container ─────────────────────────────────────────────────────────────
+export const staggerItemVariantsReduced = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { duration: DURATION.fast },
+  },
+}
 
 interface ContainerProps {
   children: ReactNode
@@ -29,9 +34,11 @@ interface ContainerProps {
 export function StaggerContainer({
   children,
   className,
-  stagger = 0.07,
-  delayChildren = 0,
+  stagger = STAGGER.children,
+  delayChildren = STAGGER.delayChildren,
 }: ContainerProps) {
+  const reduced = useReducedMotion()
+
   return (
     <motion.div
       className={className}
@@ -39,8 +46,8 @@ export function StaggerContainer({
         hidden: {},
         visible: {
           transition: {
-            staggerChildren: stagger,
-            delayChildren,
+            staggerChildren: reduced ? 0 : stagger,
+            delayChildren: reduced ? 0 : delayChildren,
           },
         },
       }}
@@ -52,16 +59,19 @@ export function StaggerContainer({
   )
 }
 
-// ── Item — wrap each child that should animate in ─────────────────────────
-
 interface ItemProps {
   children: ReactNode
   className?: string
 }
 
 export function StaggerItem({ children, className }: ItemProps) {
+  const reduced = useReducedMotion()
+
   return (
-    <motion.div className={className} variants={staggerItemVariants}>
+    <motion.div
+      className={className}
+      variants={reduced ? staggerItemVariantsReduced : staggerItemVariants}
+    >
       {children}
     </motion.div>
   )

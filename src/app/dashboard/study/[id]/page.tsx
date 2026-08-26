@@ -17,8 +17,21 @@ import type { FlashcardProgress } from '@/types/flashcardProgress'
 import type { QuizAttempt } from '@/types/quizAttempt'
 import type { TutorMessage } from '@/types/tutor'
 
-export const metadata = {
-  title: 'Study Set — MoLis',
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const supabase = await createClient()
+  const { data: doc } = await supabase
+    .from('documents')
+    .select('title')
+    .eq('id', id)
+    .single()
+  return {
+    title: doc?.title ? `${doc.title} — MoLis` : 'Study — MoLis',
+  }
 }
 
 export default async function StudySetPage({

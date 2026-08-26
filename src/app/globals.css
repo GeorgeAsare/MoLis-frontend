@@ -10,7 +10,7 @@
   /* ── Light mode tokens (default) ──────────────────────────────────────── */
 
   :root {
-    --background:             0 0% 98%;
+    --background:             27 12% 94%;
     --foreground:             0 0% 6%;
 
     --card:                   0 0% 100%;
@@ -25,7 +25,7 @@
     --secondary:              0 0% 94%;
     --secondary-foreground:   0 0% 20%;
 
-    --muted:                  0 0% 95%;
+    --muted:                  27 10% 88%;
     --muted-foreground:       0 0% 42%;
 
     --accent:                 0 82% 44%;
@@ -34,8 +34,8 @@
     --destructive:            0 84% 60%;
     --destructive-foreground: 0 0% 98%;
 
-    --border:                 0 0% 89%;
-    --input:                  0 0% 89%;
+    --border:                 30 5% 85%;
+    --input:                  30 5% 85%;
     --ring:                   0 82% 44%;
 
     --radius: 0.625rem;
@@ -60,12 +60,71 @@
     --ml-dur-normal:  250ms;
     --ml-dur-slow:    380ms;
     --ml-dur-slower:  550ms;
+
+    /* ── Typography scale ────────────────────────────────────────────── */
+    --ml-text-xs:      0.6875rem;    /* 11px — eyebrow / badge / meta */
+    --ml-text-sm:      0.8125rem;    /* 13px — label / caption */
+    --ml-text-base:    0.9375rem;    /* 15px — body */
+    --ml-text-lg:      1.0625rem;    /* 17px — subtitle / lead */
+    --ml-text-xl:      1.25rem;      /* 20px — section heading */
+    --ml-text-2xl:     1.625rem;     /* 26px — page title */
+    --ml-text-display: 2.25rem;      /* 36px — hero / display */
+
+    /* ── Surface hierarchy (light) ───────────────────────────────────── */
+    --surface-0:           hsl(27 12% 94%);  /* warm stone page background */
+    --surface-1:           hsl(0 0% 100%);   /* pure white card — floats +6% */
+    --surface-2:           hsl(27 10% 88%);  /* recessed warm stone — -6% from page */
+    --surface-elevated:    hsl(0 0% 100%);   /* popover / elevated card */
+    --sidebar-background:  hsl(0 0% 100%);   /* clean white nav drawer */
+
+    /* ── Semantic text hierarchy (light) ─────────────────────────────── */
+    --text-primary:   hsl(0 0% 6%);
+    --text-secondary: hsl(0 0% 6% / 0.65);
+    --text-tertiary:  hsl(0 0% 6% / 0.38);
+
+    /* ── Divider ─────────────────────────────────────────────────────── */
+    --divider: hsl(30 5% 87%);
+
+    /* ── Elevation shadows (light) — dimensional layering ────────────── */
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04);
+    --shadow-sm: 0 1px 4px rgba(0,0,0,0.11), 0 1px 2px rgba(0,0,0,0.07);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.13), 0 2px 4px rgba(0,0,0,0.08);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.09);
+
+    /* ── Brand red tint states ────────────────────────────────────────── */
+    --red-tint:       hsl(var(--primary) / 0.07);
+    --red-tint-hover: hsl(var(--primary) / 0.12);
   }
 
   /* ── Dark mode (system auto) ──────────────────────────────────────────── */
 
   @media (prefers-color-scheme: dark) {
     :root {
+      /* Surface hierarchy (dark) */
+      --surface-0:          hsl(0 4% 8%);
+      --surface-1:          hsl(0 3% 12%);
+      --surface-2:          hsl(0 2% 15%);
+      --surface-elevated:   hsl(0 3% 13%);
+      --sidebar-background: hsl(0 3% 10%);
+
+      /* Semantic text (dark) */
+      --text-primary:   hsl(0 0% 97%);
+      --text-secondary: hsl(0 0% 97% / 0.65);
+      --text-tertiary:  hsl(0 0% 97% / 0.38);
+
+      /* Divider (dark) */
+      --divider: hsl(0 0% 18%);
+
+      /* Elevation shadows (dark) */
+      --shadow-xs: 0 1px 2px rgba(0,0,0,0.35);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.40), 0 0 0 1px rgba(255,255,255,0.03) inset;
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.45), 0 2px 4px rgba(0,0,0,0.25);
+      --shadow-lg: 0 8px 32px rgba(0,0,0,0.50), 0 4px 8px rgba(0,0,0,0.30);
+
+      /* Brand red tint (dark — slightly stronger) */
+      --red-tint:       hsl(var(--primary) / 0.09);
+      --red-tint-hover: hsl(var(--primary) / 0.15);
+
       --background:             0 4% 8%;
       --foreground:             0 0% 97%;
 
@@ -99,6 +158,22 @@
   /* ── Dark mode (forced via .dark class) ───────────────────────────────── */
 
   .dark {
+    --surface-0:          hsl(0 4% 8%);
+    --surface-1:          hsl(0 3% 12%);
+    --surface-2:          hsl(0 2% 15%);
+    --surface-elevated:   hsl(0 3% 13%);
+    --sidebar-background: hsl(0 3% 10%);
+    --text-primary:   hsl(0 0% 97%);
+    --text-secondary: hsl(0 0% 97% / 0.65);
+    --text-tertiary:  hsl(0 0% 97% / 0.38);
+    --divider: hsl(0 0% 18%);
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.35);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.40), 0 0 0 1px rgba(255,255,255,0.03) inset;
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.45), 0 2px 4px rgba(0,0,0,0.25);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.50), 0 4px 8px rgba(0,0,0,0.30);
+    --red-tint:       hsl(var(--primary) / 0.09);
+    --red-tint-hover: hsl(var(--primary) / 0.15);
+
     --background:             0 4% 8%;
     --foreground:             0 0% 97%;
 
@@ -131,7 +206,7 @@
   /* ── Light mode (forced via .light class) ─────────────────────────────── */
 
   .light {
-    --background:             0 0% 98%;
+    --background:             27 12% 94%;
     --foreground:             0 0% 6%;
 
     --card:                   0 0% 100%;
@@ -146,7 +221,7 @@
     --secondary:              0 0% 94%;
     --secondary-foreground:   0 0% 20%;
 
-    --muted:                  0 0% 95%;
+    --muted:                  27 10% 88%;
     --muted-foreground:       0 0% 42%;
 
     --accent:                 0 82% 44%;
@@ -155,9 +230,20 @@
     --destructive:            0 84% 60%;
     --destructive-foreground: 0 0% 98%;
 
-    --border:                 0 0% 89%;
-    --input:                  0 0% 89%;
+    --border:                 30 5% 85%;
+    --input:                  30 5% 85%;
     --ring:                   0 82% 44%;
+
+    --surface-0:          hsl(27 12% 94%);
+    --surface-1:          hsl(0 0% 100%);
+    --surface-2:          hsl(27 10% 88%);
+    --surface-elevated:   hsl(0 0% 100%);
+    --sidebar-background: hsl(0 0% 100%);
+    --divider:            hsl(30 5% 85%);
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04);
+    --shadow-sm: 0 1px 4px rgba(0,0,0,0.11), 0 1px 2px rgba(0,0,0,0.07);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.13), 0 2px 4px rgba(0,0,0,0.08);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.09);
   }
 
   /* ── Base resets ──────────────────────────────────────────────────────── */
@@ -204,6 +290,13 @@
   --color-border:                 hsl(var(--border));
   --color-input:                  hsl(var(--input));
   --color-ring:                   hsl(var(--ring));
+
+  /* Semantic surface hierarchy */
+  --color-surface-0:             var(--surface-0);
+  --color-surface-1:             var(--surface-1);
+  --color-surface-2:             var(--surface-2);
+  --color-surface-elevated:      var(--surface-elevated);
+  --color-sidebar-background:    var(--sidebar-background);
 
   --radius-sm:  calc(var(--radius) - 4px);
   --radius-md:  calc(var(--radius) - 2px);
@@ -277,7 +370,7 @@
   .animate-pulse-outward       { animation: pulse-outward 2.8s ease-out infinite; }
   .animate-pulse-outward-delay { animation: pulse-outward 2.8s ease-out 1.4s infinite; }
 
-  /* Shimmer skeleton */
+  /* Shimmer skeleton — light/dark aware */
   .shimmer {
     position: relative;
     overflow: hidden;
@@ -290,10 +383,36 @@
     background: linear-gradient(
       90deg,
       transparent 0%,
-      rgba(255, 255, 255, 0.04) 50%,
+      rgba(0, 0, 0, 0.04) 50%,
       transparent 100%
     );
     animation: shimmer 1.8s ease-in-out infinite;
+  }
+  @media (prefers-color-scheme: dark) {
+    .shimmer::after {
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.05) 50%,
+        transparent 100%
+      );
+    }
+  }
+  .dark .shimmer::after {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      transparent 100%
+    );
+  }
+  .light .shimmer::after {
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(0, 0, 0, 0.04) 50%,
+      transparent 100%
+    );
   }
 
   /* Background texture — adapts to mode */
@@ -371,17 +490,21 @@
   .glow-neutral    { box-shadow: 0 0 24px -6px rgba(255, 255, 255, 0.07); }
   .glow-neutral-sm { box-shadow: 0 0 12px -4px rgba(0, 0, 0, 0.30); }
 
-  /* ── Elevation shadows (card depth) ────────────────────────────────────── */
+  /* ── Elevation shadows (card depth) — light/dark aware ─────────────────── */
   .shadow-card {
-    box-shadow:
-      0 1px 3px rgba(0, 0, 0, 0.30),
-      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   }
   .shadow-card-hover {
-    box-shadow:
-      0 4px 24px rgba(0, 0, 0, 0.38),
-      0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.10);
   }
+  @media (prefers-color-scheme: dark) {
+    .shadow-card       { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(255, 255, 255, 0.04) inset; }
+    .shadow-card-hover { box-shadow: 0 4px 24px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.06) inset; }
+  }
+  .dark .shadow-card       { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(255, 255, 255, 0.04) inset; }
+  .dark .shadow-card-hover { box-shadow: 0 4px 24px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 255, 255, 0.06) inset; }
+  .light .shadow-card       { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
+  .light .shadow-card-hover { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.10); }
 
   /* ── Glow: emerald status ───────────────────────────────────────────────── */
   .glow-emerald { box-shadow: 0 0 8px rgba(52, 211, 153, 0.6); }
@@ -396,33 +519,52 @@
 
 /* ── DOCX viewer prose ───────────────────────────────────────────────────── */
 
-.docx-content h1 { font-size: 1.5rem; font-weight: 600; margin: 1.5rem 0 0.75rem; color: rgba(255,255,255,0.90); }
-.docx-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: rgba(255,255,255,0.85); }
-.docx-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: rgba(255,255,255,0.80); }
+.docx-content h1 { font-size: 1.5rem; font-weight: 600; margin: 1.5rem 0 0.75rem; color: hsl(var(--foreground) / 0.90); }
+.docx-content h2 { font-size: 1.25rem; font-weight: 600; margin: 1.25rem 0 0.5rem; color: hsl(var(--foreground) / 0.85); }
+.docx-content h3 { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: hsl(var(--foreground) / 0.80); }
 .docx-content h4,
 .docx-content h5,
-.docx-content h6 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.35rem; color: rgba(255,255,255,0.75); }
-.docx-content p { margin: 0.5rem 0; line-height: 1.7; }
+.docx-content h6 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.35rem; color: hsl(var(--foreground) / 0.75); }
+.docx-content p { margin: 0.5rem 0; line-height: 1.7; color: hsl(var(--foreground)); }
 .docx-content ul,
 .docx-content ol { margin: 0.5rem 0 0.5rem 1.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
 .docx-content ul { list-style-type: disc; }
 .docx-content ol { list-style-type: decimal; }
-.docx-content li { line-height: 1.65; }
+.docx-content li { line-height: 1.65; color: hsl(var(--foreground)); }
 .docx-content strong,
-.docx-content b { font-weight: 600; color: rgba(255,255,255,0.88); }
+.docx-content b { font-weight: 600; color: hsl(var(--foreground) / 0.90); }
 .docx-content em,
 .docx-content i { font-style: italic; }
 .docx-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.875rem; }
-.docx-content th { border: 1px solid rgba(255,255,255,0.1); padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.04); text-align: left; font-weight: 600; color: rgba(255,255,255,0.70); }
-.docx-content td { border: 1px solid rgba(255,255,255,0.07); padding: 0.5rem 0.75rem; }
-.docx-content blockquote { border-left: 3px solid rgba(190,28,28,0.35); padding-left: 1rem; margin: 0.75rem 0; color: rgba(255,255,255,0.50); font-style: italic; }
+.docx-content th { border: 1px solid hsl(var(--border)); padding: 0.5rem 0.75rem; background: hsl(var(--muted) / 0.5); text-align: left; font-weight: 600; color: hsl(var(--muted-foreground)); }
+.docx-content td { border: 1px solid hsl(var(--border) / 0.6); padding: 0.5rem 0.75rem; color: hsl(var(--foreground)); }
+.docx-content blockquote { border-left: 3px solid hsl(var(--primary) / 0.35); padding-left: 1rem; margin: 0.75rem 0; color: hsl(var(--muted-foreground)); font-style: italic; }
 .docx-content pre,
-.docx-content code { font-family: monospace; font-size: 0.85em; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 0.1em 0.35em; }
+.docx-content code { font-family: monospace; font-size: 0.85em; background: hsl(var(--muted) / 0.5); border-radius: 4px; padding: 0.1em 0.35em; color: hsl(var(--foreground)); }
 .docx-content pre { padding: 0.75rem 1rem; overflow-x: auto; }
-.docx-content hr { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 1.25rem 0; }
-.docx-content a { color: rgba(220, 80, 80, 0.85); text-decoration: underline; text-underline-offset: 2px; }
+.docx-content hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 1.25rem 0; }
+.docx-content a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
 
 /* ── react-pdf overrides ─────────────────────────────────────────────────── */
 
 .react-pdf__Page__canvas      { border-radius: 8px; }
 .react-pdf__Page__textContent { color: transparent; }
+
+/* ── Reduced motion — pause all decorative keyframe animations ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Preserve spinner — it's functional, not decorative */
+  .animate-spin,
+  [class*="animate-spin"] {
+    animation-duration: 0.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "authority": "MoLis repository migration history; never Supabase service migration tables",
-  "generated_at": "2026-08-11",
+  "generated_at": "2026-08-26",
   "sole_authority": true,
-  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated 2026-08-11 for FOCUSED REJECT correction: added file_path column to R10-H04 documents source-column list (D11 ordinal 4, text, nullable); updated R13-H02 documents exact column count from 9 to 10. Prior Round 17 corrections remain: R17-H01 TABLE default ACL; R17-H02 post-upload deadline checks; R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL; R17-M01/M02 PNG/canonical text.",
+  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated 2026-08-11 for FOCUSED REJECT correction: added file_path column to R10-H04 documents source-column list (D11 ordinal 4, text, nullable); updated R13-H02 documents exact column count from 9 to 10. Prior Round 17 corrections remain: R17-H01 TABLE default ACL; R17-H02 post-upload deadline checks; R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL; R17-M01/M02 PNG/canonical text. Updated 2026-08-26 on feature/molis-beta-experience: registered Chat 4 flashcard lifecycle RPCs (orders 3–6); all locally authored; orders 3–6 were executed in the local disposable validation database supabase_db_molis-beta-foundation-validation for lifecycle testing and passed 56/56 assertions. Orders 3–6 subsequently applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26; Supabase auto-granted anon EXECUTE on each new function despite REVOKE ALL FROM PUBLIC in the migration; George manually revoked anon EXECUTE for all four RPCs during production verification. Order 7 (20260826_revoke_anon_flashcard_rpcs.sql) was created to reproduce that security state in fresh-environment deployments and was applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26; production verification confirmed anon EXECUTE=false and authenticated EXECUTE=true for all four RPCs, with SECURITY DEFINER=true and search_path='' verified. Status value 'locally_authored_not_executed' was assigned to orders 3–6 before production application; per-entry execution_evidence is the authoritative record of where each migration has actually been applied and overrides the implication of the status name for those orders.",
   "execution_evidence": {
-    "database_execution_exists": false,
+    "database_execution_exists": true,
     "storage_execution_exists": false,
-    "statement": "The corrective migration is locally authored and has not been executed in any database or Storage environment. auth.schema_migrations, realtime.schema_migrations, and storage.migrations are provider-owned and are not MoLis application migration evidence."
+    "statement": "Orders 1–2 have not been executed in any production or shared database environment. Orders 3–6 (append_flashcards_rpc.sql, add_session_fields_rpc.sql, update_flashcard_status_rpc.sql, clear_session_rpc.sql) were first applied to the local disposable validation database supabase_db_molis-beta-foundation-validation for lifecycle testing, then applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Order 7 (20260826_revoke_anon_flashcard_rpcs.sql) was applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26; production verification confirmed anon EXECUTE=false and authenticated EXECUTE=true for all four RPCs. No migration has been executed in any Storage environment. auth.schema_migrations, realtime.schema_migrations, and storage.migrations are provider-owned and are not MoLis application migration evidence."
   },
   "fresh_project": {
     "deterministic_from_repository_today": false,
@@ -31,6 +31,56 @@
       "execution_evidence": "none",
       "mutable": true,
       "maintenance_contract": "When separately approved, apply after beta_foundation_v1.sql in one maintenance operation with enqueueing disabled until migration and verification complete. No execution is currently authorised."
+    },
+    {
+      "order": 3,
+      "filename": "append_flashcards_rpc.sql",
+      "sha256": "a57a6a8b28fc1089fc953228f555ddb3c93320fc71fde95aa24fb841fed2cb91",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/append_flashcards_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation for lifecycle testing (56/56 PASS). Applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Post-apply production verification confirmed: function exists, SECURITY DEFINER=true, search_path='', authenticated EXECUTE granted. Supabase auto-granted anon EXECUTE despite REVOKE ALL FROM PUBLIC in migration; George manually revoked anon EXECUTE during production verification. Order 7 reproduces the final anon-revoked state for fresh-environment deployments.",
+      "mutable": true,
+      "maintenance_contract": "Must be applied before add_session_fields_rpc.sql (order 4). Adds append_flashcards SECURITY DEFINER RPC: atomic JSONB append with FOR UPDATE lock, FlashcardItem validation, optimistic concurrency guard, and progress alignment. Replaces unsafe DELETE+INSERT pattern."
+    },
+    {
+      "order": 4,
+      "filename": "add_session_fields_rpc.sql",
+      "sha256": "3b1e22b836e9740e07f94560a11dd220dc5d5a936f763e988dd76429f55975f2",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/add_session_fields_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation for lifecycle testing (56/56 PASS). Applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Post-apply production verification confirmed: session_card_indices and session_config columns present, function exists, SECURITY DEFINER=true, search_path='', authenticated EXECUTE granted. Supabase auto-granted anon EXECUTE despite REVOKE ALL FROM PUBLIC in migration; George manually revoked anon EXECUTE during production verification. Order 7 reproduces the final anon-revoked state for fresh-environment deployments.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 3 (append_flashcards_rpc.sql). Adds session_card_indices and session_config columns to flashcard_progress (idempotent ADD COLUMN IF NOT EXISTS); replaces start_flashcard_session with v3 SECURITY DEFINER RPC: fractional/duplicate index rejection, session_config object validation, review_learning_only derived exclusively from session_config."
+    },
+    {
+      "order": 5,
+      "filename": "update_flashcard_status_rpc.sql",
+      "sha256": "5e7c9226e59ff4da5ab9c2daeccde502c90d38ee10f6e03c9a6aaeba901a7367",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/update_flashcard_status_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation for lifecycle testing (56/56 PASS). Applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Post-apply production verification confirmed: function exists, SECURITY DEFINER=true, search_path='', authenticated EXECUTE granted. Supabase auto-granted anon EXECUTE despite REVOKE ALL FROM PUBLIC in migration; George manually revoked anon EXECUTE during production verification. Order 7 reproduces the final anon-revoked state for fresh-environment deployments.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 4 (add_session_fields_rpc.sql) for session_card_indices and session_config columns. Replaces update_flashcard_status with v3 SECURITY DEFINER RPC (4 params, no client-supplied current_index or phase): FOR UPDATE lock on flashcards, invariant checks, answer-binding validation, server-side index advance, completion detection."
+    },
+    {
+      "order": 6,
+      "filename": "clear_session_rpc.sql",
+      "sha256": "e53217de57b56ada07ae67bbca39e3baf911e899aa9939adac57f1b89b822651",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/clear_session_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation for lifecycle testing (56/56 PASS). Applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Post-apply production verification confirmed: function exists, SECURITY DEFINER=true, search_path='', authenticated EXECUTE granted. Supabase auto-granted anon EXECUTE despite REVOKE ALL FROM PUBLIC in migration; George manually revoked anon EXECUTE during production verification. Order 7 reproduces the final anon-revoked state for fresh-environment deployments.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 5 (update_flashcard_status_rpc.sql). Adds clear_flashcard_session SECURITY DEFINER RPC: acquires flashcards FOR UPDATE (same lock as update_flashcard_status), sets phase=ready, current_index=0, clears session_card_indices and session_config. Replaces fire-and-forget direct table UPDATE."
+    },
+    {
+      "order": 7,
+      "filename": "20260826_revoke_anon_flashcard_rpcs.sql",
+      "sha256": "fd7988dde2d0001a2c801b55a1892d76676b2d1da1e7300ec85101806f895660",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/20260826_revoke_anon_flashcard_rpcs.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Authored 2026-08-26 on feature/molis-beta-experience. Validated on local disposable DB: anon cannot execute any of the four flashcard RPCs; authenticated can execute all four. Applied to production Supabase project ujwfkhvmpdmgjausnbre on 2026-08-26. Production verification confirmed: anon EXECUTE=false, authenticated EXECUTE=true, postgres EXECUTE=true, service_role EXECUTE=true for append_flashcards, start_flashcard_session, update_flashcard_status, and clear_flashcard_session; SECURITY DEFINER=true and search_path='' verified for all four. No production student data was used for testing.",
+      "mutable": true,
+      "maintenance_contract": "Depends on orders 3–6 (all four flashcard RPCs must exist). Issues REVOKE ALL PRIVILEGES FROM anon for append_flashcards, start_flashcard_session, update_flashcard_status, and clear_flashcard_session. Reproduces the anon-revoked security state established manually during production verification of orders 3–6. Applied to production 2026-08-26."
     }
   ]
 }

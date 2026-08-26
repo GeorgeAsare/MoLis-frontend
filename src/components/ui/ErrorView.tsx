@@ -11,29 +11,25 @@ interface ErrorViewProps {
 export function ErrorView({ context, digest, onRetry }: ErrorViewProps) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-      {/* Icon */}
       <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-amber-500/[0.08]">
         <WarningIcon className="h-6 w-6 text-amber-400/70" />
       </div>
 
-      {/* Copy */}
-      <h2 className="text-base font-semibold tracking-tight text-white">
+      <h2 className="text-base font-semibold tracking-tight text-foreground">
         Something went wrong
       </h2>
-      <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-white/40">
+      <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-muted-foreground">
         {context} Try again or refresh the page.
       </p>
 
-      {/* Retry */}
       <div className="mt-6">
         <Button variant="secondary" onClick={onRetry}>
           Try again
         </Button>
       </div>
 
-      {/* Digest — useful for matching server-side logs */}
       {digest ? (
-        <p className="mt-6 font-mono text-[11px] text-white/15">
+        <p className="mt-6 font-mono text-[11px] text-foreground/20">
           Error ID: {digest}
         </p>
       ) : null}
