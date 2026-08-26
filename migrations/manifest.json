@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "authority": "MoLis repository migration history; never Supabase service migration tables",
+  "generated_at": "2026-08-26",
+  "sole_authority": true,
+  "note": "THIS FILE IS THE SOLE AUTHORITATIVE SOURCE for migration checksums, status and evidence. .ai/inspection/migration-manifest.md is a derived informational companion only — if it conflicts with this file, this file is correct. Updated 2026-08-11 for FOCUSED REJECT correction: added file_path column to R10-H04 documents source-column list (D11 ordinal 4, text, nullable); updated R13-H02 documents exact column count from 9 to 10. Prior Round 17 corrections remain: R17-H01 TABLE default ACL; R17-H02 post-upload deadline checks; R17-H03 FUNCTION default ACL bidirectional EXCEPT ALL; R17-M01/M02 PNG/canonical text. Updated 2026-08-26 on feature/molis-beta-experience: registered Chat 4 flashcard lifecycle RPCs (orders 3–6); all locally authored; orders 3–6 were executed in the local disposable validation database supabase_db_molis-beta-foundation-validation for lifecycle testing and passed 56/56 assertions; none has been executed in production or any shared environment. Status value 'locally_authored_not_executed' in this manifest denotes that no production or shared-environment execution is authorised; it does not exclude local disposable validation databases. Per-entry execution_evidence is the authoritative record of where each migration has actually been applied.",
+  "execution_evidence": {
+    "database_execution_exists": true,
+    "storage_execution_exists": false,
+    "statement": "Orders 1–2 have not been executed in any production or shared database environment. Orders 3–6 (append_flashcards_rpc.sql, add_session_fields_rpc.sql, update_flashcard_status_rpc.sql, clear_session_rpc.sql) were applied to the local disposable validation database supabase_db_molis-beta-foundation-validation for lifecycle testing only; they have not been applied to production or any shared environment. No migration has been executed in any Storage environment. auth.schema_migrations, realtime.schema_migrations, and storage.migrations are provider-owned and are not MoLis application migration evidence."
+  },
+  "fresh_project": {
+    "deterministic_from_repository_today": false,
+    "blocking_reason": "The canonical prerequisite active-product schema predating beta_foundation_v1.sql is not yet represented by a version-controlled MoLis migration. Fresh-project execution remains blocked until that prerequisite baseline is captured and reviewed."
+  },
+  "ordered_migrations": [
+    {
+      "order": 1,
+      "filename": "beta_foundation_v1.sql",
+      "sha256": "d2bc6e2cd63c243d8577b3b4785fb8638e13466472917cbd79203e3442fdb60b",
+      "status": "immutable_historical_baseline",
+      "execution_evidence": "Catalogue consistent with this file; exact historical execution unproven by a repository-owned application migration ledger. D11 read-only inspections confirmed the live schema shape matches what this file would produce.",
+      "mutable": false
+    },
+    {
+      "order": 2,
+      "filename": "20260729120001_generation_job_state_machine_schema.sql",
+      "sha256": "bf76114abd8157637c42bef9fbb2e64751f5a6f8cc19868c22e1c2a7d21afdf9",
+      "sha256_note": "Computed 2026-08-14 after Phase 2B surgical fixes: (1) operator-precedence parentheses around ->>'text_model' and ->>'image_model' in fn_complete_and_publish_job; (2) concurrency fix in fn_enqueue_job EXCEPTION handler replacing GET DIAGNOSTICS ROW_COUNT with ledger re-read. Prior checksum 12b4eeb2b673dfd6378555ab9c43cd0ba239de20608f309f85d6c25fbf1bc404 was from 2026-08-11 FOCUSED REJECT correction. Verify with: shasum -a 256 migrations/20260729120001_generation_job_state_machine_schema.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "none",
+      "mutable": true,
+      "maintenance_contract": "When separately approved, apply after beta_foundation_v1.sql in one maintenance operation with enqueueing disabled until migration and verification complete. No execution is currently authorised."
+    },
+    {
+      "order": 3,
+      "filename": "append_flashcards_rpc.sql",
+      "sha256": "a57a6a8b28fc1089fc953228f555ddb3c93320fc71fde95aa24fb841fed2cb91",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/append_flashcards_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation only; not applied to production or any shared environment.",
+      "mutable": true,
+      "maintenance_contract": "Must be applied before add_session_fields_rpc.sql (order 4). Adds append_flashcards SECURITY DEFINER RPC: atomic JSONB append with FOR UPDATE lock, FlashcardItem validation, optimistic concurrency guard, and progress alignment. Replaces unsafe DELETE+INSERT pattern. No execution currently authorised without George's approval."
+    },
+    {
+      "order": 4,
+      "filename": "add_session_fields_rpc.sql",
+      "sha256": "3b1e22b836e9740e07f94560a11dd220dc5d5a936f763e988dd76429f55975f2",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/add_session_fields_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation only; not applied to production or any shared environment.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 3 (append_flashcards_rpc.sql). Adds session_card_indices and session_config columns to flashcard_progress (idempotent ADD COLUMN IF NOT EXISTS); replaces start_flashcard_session with v3 SECURITY DEFINER RPC: fractional/duplicate index rejection, session_config object validation, review_learning_only derived exclusively from session_config. No execution currently authorised without George's approval."
+    },
+    {
+      "order": 5,
+      "filename": "update_flashcard_status_rpc.sql",
+      "sha256": "5e7c9226e59ff4da5ab9c2daeccde502c90d38ee10f6e03c9a6aaeba901a7367",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/update_flashcard_status_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation only; not applied to production or any shared environment.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 4 (add_session_fields_rpc.sql) for session_card_indices and session_config columns. Replaces update_flashcard_status with v3 SECURITY DEFINER RPC (4 params, no client-supplied current_index or phase): FOR UPDATE lock on flashcards, invariant checks, answer-binding validation, server-side index advance, completion detection. No execution currently authorised without George's approval."
+    },
+    {
+      "order": 6,
+      "filename": "clear_session_rpc.sql",
+      "sha256": "e53217de57b56ada07ae67bbca39e3baf911e899aa9939adac57f1b89b822651",
+      "sha256_note": "Computed 2026-08-26 on feature/molis-beta-experience. Verify with: shasum -a 256 migrations/clear_session_rpc.sql",
+      "status": "locally_authored_not_executed",
+      "execution_evidence": "Applied to local disposable DB supabase_db_molis-beta-foundation-validation only; not applied to production or any shared environment.",
+      "mutable": true,
+      "maintenance_contract": "Depends on order 5 (update_flashcard_status_rpc.sql). Adds clear_flashcard_session SECURITY DEFINER RPC: acquires flashcards FOR UPDATE (same lock as update_flashcard_status), sets phase=ready, current_index=0, clears session_card_indices and session_config. Replaces fire-and-forget direct table UPDATE. No execution currently authorised without George's approval."
+    }
+  ]
+}

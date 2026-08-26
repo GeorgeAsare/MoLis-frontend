@@ -229,13 +229,17 @@ BEGIN
         v_prog_count, p_expected_count;
     END IF;
 
+    -- Blocker 6: preserve an active session when the student adds cards mid-session.
+    -- Only extend card_statuses with 'unseen' tails for the new cards.
+    -- current_index, session_card_indices, session_config, review_learning_only
+    -- are not listed in SET and are therefore preserved unchanged by PostgreSQL.
     UPDATE public.flashcard_progress
     SET
       card_statuses = card_statuses || (
         SELECT jsonb_agg('"unseen"'::jsonb)
         FROM   generate_series(1, v_new_count)
       ),
-      phase         = 'ready',
+      phase         = CASE WHEN phase = 'studying' THEN 'studying' ELSE 'ready' END,
       updated_at    = now()
     WHERE document_id = p_document_id
       AND user_id     = v_user_id;

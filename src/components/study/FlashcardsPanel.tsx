@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { generateFlashcards, addFlashcards } from '@/app/actions/flashcards'
 import { recordConceptResult } from '@/app/actions/conceptMastery'
-import { saveFlashcardProgress } from '@/app/actions/flashcardProgress'
+import { updateFlashcardStatus, startFlashcardSession, clearFlashcardSession } from '@/app/actions/flashcardProgress'
 import { saveMemory } from '@/app/actions/userMemories'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { FlashcardSet, FlashcardItem } from '@/types/flashcard'
 import type { DocumentAnalysis } from '@/types/documentAnalysis'
-import type { FlashcardProgress, CardStatus } from '@/types/flashcardProgress'
+import type { FlashcardProgress, CardStatus, SessionPersistedConfig } from '@/types/flashcardProgress'
 import type { TutorMode } from '@/types/tutor'
 import { cn } from '@/lib/utils'
 
@@ -19,8 +19,11 @@ type Difficulty = 'easy' | 'medium' | 'hard' | 'mixed'
 
 interface SessionConfig {
   cards: FlashcardItem[]
-  indices: number[]  // original indices in flashcards.cards[]
-  label: string      // e.g. "10 cards · Medium · All topics"
+  indices: number[]         // original indices in flashcards.cards[]
+  label: string             // e.g. "10 cards · Medium · All topics"
+  reviewLearningOnly: boolean
+  difficulty: 'easy' | 'medium' | 'hard' | 'mixed'
+  selectedTopics: string[]  // empty = all topics
 }
 
 interface Props {
@@ -67,6 +70,64 @@ function hasValidProgress(
   )
 }
 
+// Restores the exact session from persisted session_card_indices.
+// Validates: phase must be 'studying', session_card_indices must be a non-empty
+// array of non-negative integers all within the current deck bounds, and
+// current_index must be within [0, session_card_indices.length).
+// Returns null when any check fails — callers fall back to the ready phase.
+function deriveResumableSession(
+  progress: FlashcardProgress,
+  flashcards: FlashcardSet,
+): { session: SessionConfig; resumeIndex: number } | null {
+  if (progress.phase !== 'studying') return null
+
+  const rawIndices = progress.session_card_indices
+  if (!Array.isArray(rawIndices) || rawIndices.length === 0) return null
+
+  const deckLen = flashcards.cards.length
+  for (const idx of rawIndices) {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= deckLen) return null
+  }
+  const validIndices = rawIndices as number[]
+
+  const ci = progress.current_index
+  if (!Number.isInteger(ci) || ci < 0 || ci >= validIndices.length) return null
+
+  const cards = validIndices.map(i => flashcards.cards[i])
+
+  // Reconstruct label and config from persisted session_config when available.
+  const sc = progress.session_config as SessionPersistedConfig | null
+  let label: string
+  let difficulty: 'easy' | 'medium' | 'hard' | 'mixed' = 'mixed'
+  let selectedTopics: string[] = []
+  let reviewLearningOnly = progress.review_learning_only
+
+  if (sc && typeof sc === 'object' && !Array.isArray(sc)) {
+    difficulty = sc.difficulty ?? 'mixed'
+    selectedTopics = Array.isArray(sc.selected_topics) ? sc.selected_topics : []
+    reviewLearningOnly = typeof sc.review_learning_only === 'boolean'
+      ? sc.review_learning_only
+      : progress.review_learning_only
+
+    const diffStr = difficulty === 'mixed'
+      ? 'Mixed'
+      : difficulty.charAt(0).toUpperCase() + difficulty.slice(1)
+    const topicStr = selectedTopics.length === 0
+      ? 'All topics'
+      : selectedTopics.length === 1
+        ? selectedTopics[0]
+        : `${selectedTopics.length} topics`
+    label = `${validIndices.length} cards · ${diffStr} · ${topicStr}`
+  } else {
+    label = `${validIndices.length} card${validIndices.length !== 1 ? 's' : ''} · Resumed`
+  }
+
+  return {
+    session: { cards, indices: validIndices, label, reviewLearningOnly, difficulty, selectedTopics },
+    resumeIndex: ci,
+  }
+}
+
 // Returns preset count options for the given total (excludes "All N" and "Custom").
 // Matches the brief examples exactly:
 //   7 → [5]         18 → [5,10,15]      46 → [5,10,20,30]   100 → [10,20,30,50]
@@ -96,12 +157,19 @@ export function FlashcardsPanel({
   initialProgress,
   onAskTutor,
 }: Props) {
-  const [phase, setPhase] = useState<Phase>(() => (!initialFlashcards ? 'idle' : 'ready'))
+  const [phase, setPhase] = useState<Phase>(() => {
+    if (!initialFlashcards) return 'idle'
+    if (initialProgress) {
+      const resumed = deriveResumableSession(initialProgress, initialFlashcards)
+      if (resumed !== null) return 'studying'
+    }
+    return 'ready'
+  })
   const [flashcards, setFlashcards] = useState<FlashcardSet | null>(initialFlashcards)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [msgIndex, setMsgIndex] = useState(0)
 
-  // Full-deck card statuses — accumulates across sessions
+  // Full-deck card statuses — accumulates across sessions; restored from persisted progress
   const [cardStatuses, setCardStatuses] = useState<CardStatus[]>(() => {
     if (hasValidProgress(initialProgress, initialFlashcards)) {
       return initialProgress!.card_statuses as CardStatus[]
@@ -114,10 +182,46 @@ export function FlashcardsPanel({
   const [addMoreError, setAddMoreError] = useState<string | null>(null)
   const [addMsgIndex, setAddMsgIndex] = useState(0)
 
-  // Active session state
-  const [session, setSession] = useState<SessionConfig | null>(null)
-  const [sessionStatuses, setSessionStatuses] = useState<CardStatus[]>([])
-  const [currentIndex, setCurrentIndex] = useState(0)
+  // Answer-save state: true while awaiting updateFlashcardStatus RPC (prevents double-submit)
+  const [isSavingAnswer, setIsSavingAnswer] = useState(false)
+  // Inline error shown on the current card when updateFlashcardStatus fails
+  const [answerSaveError, setAnswerSaveError] = useState<string | null>(null)
+  // End-session state: true while awaiting clearFlashcardSession RPC
+  const [isEndingSession, setIsEndingSession] = useState(false)
+  // Error shown in StudyMode header when clearFlashcardSession fails
+  const [endSessionError, setEndSessionError] = useState<string | null>(null)
+
+  // Session-start state: true while awaiting start_flashcard_session RPC (Blocker 3)
+  const [isStartingSession, setIsStartingSession] = useState(false)
+  // Error shown in setup/ready phase when start_flashcard_session fails (Blocker 3)
+  const [sessionStartError, setSessionStartError] = useState<string | null>(null)
+
+  // Active session state — restored exactly from persisted session_card_indices on mount
+  const [session, setSession] = useState<SessionConfig | null>(() => {
+    if (!initialFlashcards || !initialProgress) return null
+    return deriveResumableSession(initialProgress, initialFlashcards)?.session ?? null
+  })
+
+  const [sessionStatuses, setSessionStatuses] = useState<CardStatus[]>(() => {
+    if (!initialFlashcards || !initialProgress) return []
+    const resumed = deriveResumableSession(initialProgress, initialFlashcards)
+    if (!resumed) return []
+    return resumed.session.indices.map(i => (initialProgress.card_statuses[i] as CardStatus) ?? 'unseen')
+  })
+
+  // authoritativeIndex: the persisted server position — only advances after a successful
+  // updateFlashcardStatus RPC. Determines which card is eligible for answering.
+  const [authoritativeIndex, setAuthoritativeIndex] = useState<number>(() => {
+    if (!initialFlashcards || !initialProgress) return 0
+    return deriveResumableSession(initialProgress, initialFlashcards)?.resumeIndex ?? 0
+  })
+  // viewIndex: client-only display position — may go backward for review.
+  // Never advances beyond authoritativeIndex. Answer controls are only active when
+  // viewIndex === authoritativeIndex.
+  const [viewIndex, setViewIndex] = useState<number>(() => {
+    if (!initialFlashcards || !initialProgress) return 0
+    return deriveResumableSession(initialProgress, initialFlashcards)?.resumeIndex ?? 0
+  })
   const [flipped, setFlipped] = useState(false)
 
   const sessionCountRef = useRef(0)
@@ -176,23 +280,39 @@ export function FlashcardsPanel({
     setPhase('setup')
   }
 
-  function startSession(config: SessionConfig) {
+  // Blocker 3: async — StudyMode is entered only AFTER the RPC succeeds.
+  // On failure: show error in setup/ready phase and allow retry. Never enters StudyMode.
+  async function startSession(config: SessionConfig): Promise<void> {
+    setIsStartingSession(true)
+    setSessionStartError(null)
+
+    const persistedConfig: SessionPersistedConfig = {
+      difficulty: config.difficulty,
+      selected_topics: config.selectedTopics,
+      review_learning_only: config.reviewLearningOnly,
+    }
+
+    const { error } = await startFlashcardSession(documentId, config.indices, persistedConfig)
+    setIsStartingSession(false)
+
+    if (error) {
+      setSessionStartError(error)
+      return
+    }
+
+    // RPC succeeded — safe to enter StudyMode
     const statuses = new Array(config.cards.length).fill('unseen') as CardStatus[]
     setSession(config)
     setSessionStatuses(statuses)
-    setCurrentIndex(0)
+    setAuthoritativeIndex(0)
+    setViewIndex(0)
     setFlipped(false)
+    setAnswerSaveError(null)
+    setEndSessionError(null)
     setPhase('studying')
-    saveFlashcardProgress(documentId, {
-      card_statuses: cardStatuses,
-      current_index: 0,
-      phase: 'studying',
-      review_learning_only: false,
-      started_at: new Date().toISOString(),
-    }).catch(() => {})
   }
 
-  function startLearningSession() {
+  async function startLearningSession(): Promise<void> {
     if (!flashcards) return
     const learningCards: FlashcardItem[] = []
     const learningIndices: number[] = []
@@ -204,20 +324,43 @@ export function FlashcardsPanel({
     })
     if (learningCards.length === 0) return
     const label = `${learningCards.length} card${learningCards.length !== 1 ? 's' : ''} · Learning`
-    startSession({ cards: learningCards, indices: learningIndices, label })
+    await startSession({
+      cards: learningCards,
+      indices: learningIndices,
+      label,
+      reviewLearningOnly: true,
+      difficulty: 'mixed',
+      selectedTopics: [],
+    })
   }
 
   function handleFlip() {
     setFlipped(v => !v)
   }
 
-  function handleMark(status: 'known' | 'learning') {
-    if (!session || !flashcards) return
-    const card = session.cards[currentIndex]
-    const fullIdx = session.indices[currentIndex]
+  async function handleMark(status: 'known' | 'learning') {
+    if (!session || !flashcards || isSavingAnswer || isEndingSession) return
+    // Always answer the authoritative card — viewIndex may differ when reviewing earlier cards.
+    const card = session.cards[authoritativeIndex]
+    const fullIdx = session.indices[authoritativeIndex]
+    const isLast = authoritativeIndex >= session.cards.length - 1
+    const completedAt = isLast ? new Date().toISOString() : undefined
 
+    setIsSavingAnswer(true)
+    setAnswerSaveError(null)
+
+    const { error } = await updateFlashcardStatus(documentId, fullIdx, status, completedAt ?? null)
+    setIsSavingAnswer(false)
+
+    if (error) {
+      // Server rejected — stay on same card; do not advance; do not mark locally
+      setAnswerSaveError(error)
+      return
+    }
+
+    // Server succeeded — now safe to update local state and advance
     const nextSession = [...sessionStatuses]
-    nextSession[currentIndex] = status
+    nextSession[authoritativeIndex] = status
     setSessionStatuses(nextSession)
 
     const nextFull = [...cardStatuses]
@@ -233,18 +376,7 @@ export function FlashcardsPanel({
       }).catch(() => {})
     }
 
-    const isLast = currentIndex >= session.cards.length - 1
     if (isLast) {
-      setPhase('done')
-      const completedAt = new Date().toISOString()
-      saveFlashcardProgress(documentId, {
-        card_statuses: nextFull,
-        current_index: 0,
-        phase: 'done',
-        review_learning_only: false,
-        completed_at: completedAt,
-      }).catch(() => {})
-
       sessionCountRef.current += 1
       if (sessionCountRef.current >= 3) {
         const knownCount = nextSession.filter(s => s === 'known').length
@@ -267,32 +399,42 @@ export function FlashcardsPanel({
           confidence: 7,
         })
       }
+      // Completion screen shown only after server confirms the final answer
+      setPhase('done')
     } else {
-      const newIndex = currentIndex + 1
-      setCurrentIndex(newIndex)
+      const newAuth = authoritativeIndex + 1
+      setAuthoritativeIndex(newAuth)
+      setViewIndex(newAuth)
       setFlipped(false)
-      saveFlashcardProgress(documentId, {
-        card_statuses: nextFull,
-        current_index: newIndex,
-        phase: 'studying',
-        review_learning_only: false,
-      }).catch(() => {})
     }
   }
 
   function handlePrev() {
-    if (currentIndex <= 0) return
-    setCurrentIndex(i => i - 1)
+    if (viewIndex <= 0) return
+    setViewIndex(i => i - 1)
     setFlipped(false)
+    setAnswerSaveError(null)
   }
 
   function handleNext() {
-    if (!session || currentIndex >= session.cards.length - 1) return
-    setCurrentIndex(i => i + 1)
+    // Cannot navigate beyond the authoritative current card
+    if (viewIndex >= authoritativeIndex) return
+    setViewIndex(i => i + 1)
     setFlipped(false)
+    setAnswerSaveError(null)
   }
 
-  function endSession() {
+  async function endSession() {
+    if (isEndingSession || isSavingAnswer) return
+    setIsEndingSession(true)
+    setEndSessionError(null)
+    const { error } = await clearFlashcardSession(documentId)
+    setIsEndingSession(false)
+    if (error) {
+      setEndSessionError(error)
+      return
+    }
+    // RPC confirmed — safe to return to ready state
     setPhase('ready')
     setSession(null)
   }
@@ -324,6 +466,8 @@ export function FlashcardsPanel({
         isAddingMore={isAddingMore}
         addMsgIndex={addMsgIndex}
         addMoreError={addMoreError}
+        isStartingSession={isStartingSession}
+        sessionStartError={sessionStartError}
         onSetupSession={openSetup}
         onStartLearning={startLearningSession}
         onRegenerate={triggerGenerate}
@@ -337,20 +481,27 @@ export function FlashcardsPanel({
       <SessionSetup
         flashcards={flashcards}
         onStart={startSession}
-        onBack={() => setPhase('ready')}
+        onBack={() => { setPhase('ready'); setSessionStartError(null) }}
+        isStarting={isStartingSession}
+        startError={sessionStartError}
       />
     )
   }
 
   if (phase === 'studying' && session) {
-    const card = session.cards[currentIndex]
+    const card = session.cards[viewIndex]
     if (!card) return null
     return (
       <StudyMode
         card={card}
         flipped={flipped}
-        currentIndex={currentIndex}
+        viewIndex={viewIndex}
+        authoritativeIndex={authoritativeIndex}
         totalCards={session.cards.length}
+        isSavingAnswer={isSavingAnswer}
+        answerSaveError={answerSaveError}
+        isEndingSession={isEndingSession}
+        endSessionError={endSessionError}
         onFlip={handleFlip}
         onMark={handleMark}
         onPrev={handlePrev}
@@ -390,6 +541,8 @@ function PracticeIntro({
   isAddingMore,
   addMsgIndex,
   addMoreError,
+  isStartingSession,
+  sessionStartError,
   onSetupSession,
   onStartLearning,
   onRegenerate,
@@ -400,6 +553,8 @@ function PracticeIntro({
   isAddingMore: boolean
   addMsgIndex: number
   addMoreError: string | null
+  isStartingSession: boolean
+  sessionStartError: string | null
   onSetupSession: () => void
   onStartLearning: () => void
   onRegenerate: () => void
@@ -466,7 +621,7 @@ function PracticeIntro({
       <div className="flex flex-col gap-3 max-w-[400px]">
         <button
           onClick={onSetupSession}
-          disabled={isAddingMore}
+          disabled={isAddingMore || isStartingSession}
           className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card px-6 py-5 text-left shadow-[var(--shadow-sm)] transition-all duration-150 hover:-translate-y-px hover:shadow-[var(--shadow-md)] disabled:pointer-events-none disabled:opacity-50"
         >
           <div>
@@ -481,11 +636,14 @@ function PracticeIntro({
         {learningCount > 0 && !isAddingMore && (
           <button
             onClick={onStartLearning}
-            className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-5 py-3.5 text-left transition-colors hover:bg-amber-500/[0.08]"
+            disabled={isStartingSession}
+            className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-5 py-3.5 text-left transition-colors hover:bg-amber-500/[0.08] disabled:pointer-events-none disabled:opacity-50"
           >
             <div>
               <p className="text-[14px] font-semibold text-amber-500/85">
-                Review {learningCount} learning card{learningCount !== 1 ? 's' : ''}
+                {isStartingSession
+                  ? 'Starting session…'
+                  : `Review ${learningCount} learning card${learningCount !== 1 ? 's' : ''}`}
               </p>
               <p className="mt-0.5 text-[12px] text-foreground/35">
                 Continue where you left off
@@ -493,6 +651,15 @@ function PracticeIntro({
             </div>
             <ArrowRightIcon className="h-4 w-4 shrink-0 text-amber-500/50" />
           </button>
+        )}
+
+        {sessionStartError && (
+          <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.05] px-3 py-2.5">
+            <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400/70" />
+            <p className="text-[13px] text-red-400/70">
+              Could not start session — {sessionStartError}
+            </p>
+          </div>
         )}
       </div>
 
@@ -636,10 +803,14 @@ function SessionSetup({
   flashcards,
   onStart,
   onBack,
+  isStarting,
+  startError,
 }: {
   flashcards: FlashcardSet
-  onStart: (config: SessionConfig) => void
+  onStart: (config: SessionConfig) => Promise<void>
   onBack: () => void
+  isStarting: boolean
+  startError: string | null
 }) {
   const [difficulty, setDifficulty] = useState<Difficulty>('mixed')
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]) // empty = all
@@ -730,8 +901,15 @@ function SessionSetup({
   }, [displayCount, filteredCount, difficulty, selectedTopics, canStart])
 
   function handleStart() {
-    if (!canStart) return
-    onStart({ cards: finalCards, indices: finalIndices, label: summaryLabel })
+    if (!canStart || isStarting) return
+    void onStart({
+      cards: finalCards,
+      indices: finalIndices,
+      label: summaryLabel,
+      reviewLearningOnly: false,
+      difficulty,
+      selectedTopics,
+    })
   }
 
   function toggleTopic(topic: string) {
@@ -1003,11 +1181,29 @@ function SessionSetup({
             <p className="text-[14px] text-foreground/50">{summaryLabel}</p>
             <button
               onClick={handleStart}
-              className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/[0.09] px-6 py-3 text-[15px] font-semibold text-primary shadow-[var(--shadow-xs)] transition-all duration-150 hover:-translate-y-px hover:border-primary/45 hover:bg-primary/[0.13]"
+              disabled={isStarting}
+              className="inline-flex w-fit items-center gap-2 rounded-xl border border-primary/30 bg-primary/[0.09] px-6 py-3 text-[15px] font-semibold text-primary shadow-[var(--shadow-xs)] transition-all duration-150 hover:-translate-y-px hover:border-primary/45 hover:bg-primary/[0.13] disabled:pointer-events-none disabled:opacity-60"
             >
-              <PlayIcon className="h-4 w-4" />
-              Start {displayCount}-card session
+              {isStarting ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border border-primary/65 border-t-transparent" />
+                  Starting…
+                </>
+              ) : (
+                <>
+                  <PlayIcon className="h-4 w-4" />
+                  Start {displayCount}-card session
+                </>
+              )}
             </button>
+            {startError && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.05] px-3 py-2.5">
+                <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400/70" />
+                <p className="text-[13px] text-red-400/70">
+                  Session could not be started — {startError}. Please try again.
+                </p>
+              </div>
+            )}
           </>
         ) : (
           <p className="text-[14px] text-foreground/40">
@@ -1026,8 +1222,13 @@ function SessionSetup({
 function StudyMode({
   card,
   flipped,
-  currentIndex,
+  viewIndex,
+  authoritativeIndex,
   totalCards,
+  isSavingAnswer,
+  answerSaveError,
+  isEndingSession,
+  endSessionError,
   onFlip,
   onMark,
   onPrev,
@@ -1037,8 +1238,13 @@ function StudyMode({
 }: {
   card: FlashcardItem
   flipped: boolean
-  currentIndex: number
+  viewIndex: number
+  authoritativeIndex: number
   totalCards: number
+  isSavingAnswer: boolean
+  answerSaveError: string | null
+  isEndingSession: boolean
+  endSessionError: string | null
   onFlip: () => void
   onMark: (status: 'known' | 'learning') => void
   onPrev: () => void
@@ -1046,14 +1252,15 @@ function StudyMode({
   onEndSession: () => void
   onAskTutor?: (prompt: string, mode?: TutorMode) => void
 }) {
-  const progress = ((currentIndex + 1) / totalCards) * 100
+  const progress = ((viewIndex + 1) / totalCards) * 100
+  const atAuthoritativeCard = viewIndex === authoritativeIndex
 
-  // Keyboard controls
+  // Keyboard controls — answer keys only active when at the authoritative card and not saving
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return
       if (e.key === 'Enter' && !flipped) { onFlip(); return }
-      if (flipped) {
+      if (flipped && atAuthoritativeCard && !isSavingAnswer && !isEndingSession) {
         if (e.key === '1') { onMark('learning'); return }
         if (e.key === '2') { onMark('known'); return }
       }
@@ -1062,7 +1269,7 @@ function StudyMode({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [flipped, onFlip, onMark, onPrev, onNext])
+  }, [flipped, atAuthoritativeCard, isSavingAnswer, isEndingSession, onFlip, onMark, onPrev, onNext])
 
   return (
     <div className="flex flex-col gap-6">
@@ -1070,15 +1277,29 @@ function StudyMode({
       {/* Session header */}
       <div className="flex items-center justify-between">
         <span className="text-[14px] font-semibold text-foreground/55">
-          {currentIndex + 1} <span className="text-foreground/28">of</span> {totalCards}
+          {viewIndex + 1} <span className="text-foreground/28">of</span> {totalCards}
         </span>
         <button
           onClick={onEndSession}
-          className="text-[13px] text-foreground/32 transition-colors hover:text-foreground/55"
+          disabled={isEndingSession || isSavingAnswer}
+          className="flex items-center gap-1.5 text-[13px] text-foreground/32 transition-colors hover:text-foreground/55 disabled:pointer-events-none disabled:opacity-40"
         >
-          End session
+          {isEndingSession && (
+            <span className="h-3 w-3 animate-spin rounded-full border border-foreground/40 border-t-transparent" />
+          )}
+          {isEndingSession ? 'Ending…' : 'End session'}
         </button>
       </div>
+
+      {/* End-session error */}
+      {endSessionError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.05] px-3 py-2">
+          <WarningIcon className="h-3.5 w-3.5 shrink-0 text-red-400/70" />
+          <p className="text-[12px] text-red-400/70">
+            Could not end session — {endSessionError}. Please try again.
+          </p>
+        </div>
+      )}
 
       {/* Progress line */}
       <div className="h-[3px] overflow-hidden rounded-full bg-foreground/[0.06]">
@@ -1146,42 +1367,90 @@ function StudyMode({
 
       {/* Response controls */}
       {flipped ? (
-        <div className="flex flex-col items-center gap-4">
-          <div className="flex gap-3 w-full max-w-[400px]">
-            <button
-              onClick={() => onMark('learning')}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-foreground/12 bg-muted/35 px-4 py-3.5 text-[15px] font-semibold text-foreground/60 transition-colors hover:border-foreground/20 hover:bg-muted/55"
-            >
-              <XIcon className="h-4 w-4" />
-              Not quite
-            </button>
-            <button
-              onClick={() => onMark('known')}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-primary/28 bg-primary/[0.08] px-4 py-3.5 text-[15px] font-semibold text-primary transition-colors hover:border-primary/42 hover:bg-primary/[0.13]"
-            >
-              <CheckIcon className="h-4 w-4" />
-              Got it
-            </button>
-          </div>
-          <p className="text-[11px] text-foreground/20">Press 1 for Not quite · 2 for Got it</p>
+        atAuthoritativeCard ? (
+          <div className="flex flex-col items-center gap-4">
+            {/* Answer save error */}
+            {answerSaveError && (
+              <div className="flex items-start gap-2 w-full max-w-[400px] rounded-lg border border-red-500/20 bg-red-500/[0.05] px-3 py-2.5">
+                <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400/70" />
+                <p className="text-[13px] text-red-400/70">
+                  Could not save — {answerSaveError}. Tap Not quite or Got it to retry.
+                </p>
+              </div>
+            )}
+            <div className="flex gap-3 w-full max-w-[400px]">
+              <button
+                onClick={() => onMark('learning')}
+                disabled={isSavingAnswer || isEndingSession}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-foreground/12 bg-muted/35 px-4 py-3.5 text-[15px] font-semibold text-foreground/60 transition-colors hover:border-foreground/20 hover:bg-muted/55 disabled:pointer-events-none disabled:opacity-50"
+              >
+                {isSavingAnswer ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border border-foreground/40 border-t-transparent" />
+                ) : (
+                  <XIcon className="h-4 w-4" />
+                )}
+                Not quite
+              </button>
+              <button
+                onClick={() => onMark('known')}
+                disabled={isSavingAnswer || isEndingSession}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-primary/28 bg-primary/[0.08] px-4 py-3.5 text-[15px] font-semibold text-primary transition-colors hover:border-primary/42 hover:bg-primary/[0.13] disabled:pointer-events-none disabled:opacity-50"
+              >
+                {isSavingAnswer ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border border-primary/50 border-t-transparent" />
+                ) : (
+                  <CheckIcon className="h-4 w-4" />
+                )}
+                Got it
+              </button>
+            </div>
+            {!isSavingAnswer && !answerSaveError && (
+              <p className="text-[11px] text-foreground/20">Press 1 for Not quite · 2 for Got it</p>
+            )}
 
-          {onAskTutor && (
-            <button
-              onClick={() => onAskTutor(
-                `Help me understand this flashcard better. Question: "${card.front}" / Answer: "${card.back}"`,
-                'explain',
-              )}
-              className="flex items-center gap-1.5 text-[12px] font-medium text-foreground/32 transition-colors hover:text-foreground/55"
-            >
-              Ask MoLis to explain this
-            </button>
-          )}
-        </div>
+            {onAskTutor && !isSavingAnswer && (
+              <button
+                onClick={() => onAskTutor(
+                  `Help me understand this flashcard better. Question: "${card.front}" / Answer: "${card.back}"`,
+                  'explain',
+                )}
+                className="flex items-center gap-1.5 text-[12px] font-medium text-foreground/32 transition-colors hover:text-foreground/55"
+              >
+                Ask MoLis to explain this
+              </button>
+            )}
+          </div>
+        ) : (
+          /* Reviewing an earlier card — answer controls suppressed */
+          <div className="flex flex-col items-center gap-4">
+            <p className="text-[12px] text-foreground/38 text-center">
+              Reviewing card {viewIndex + 1} — navigate to card {authoritativeIndex + 1} to answer
+            </p>
+            <div className="flex items-center gap-3 max-w-[400px] w-full">
+              <button
+                onClick={onPrev}
+                disabled={viewIndex === 0}
+                className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/35 px-3 py-2 text-[13px] font-medium text-foreground/40 transition-colors hover:text-foreground/62 disabled:pointer-events-none disabled:opacity-25"
+              >
+                <ChevronLeftIcon className="h-3.5 w-3.5" />
+                Prev
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={onNext}
+                className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/[0.06] px-3 py-2 text-[13px] font-medium text-primary/70 transition-colors hover:bg-primary/[0.10]"
+              >
+                Next
+                <ChevronRightIcon className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )
       ) : (
         <div className="flex items-center justify-between gap-3 max-w-[400px] mx-auto w-full">
           <button
             onClick={onPrev}
-            disabled={currentIndex === 0}
+            disabled={viewIndex === 0}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/35 px-3 py-2 text-[13px] font-medium text-foreground/40 transition-colors hover:text-foreground/62 disabled:pointer-events-none disabled:opacity-25"
           >
             <ChevronLeftIcon className="h-3.5 w-3.5" />
@@ -1195,7 +1464,7 @@ function StudyMode({
           </button>
           <button
             onClick={onNext}
-            disabled={currentIndex >= totalCards - 1}
+            disabled={viewIndex >= authoritativeIndex}
             className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/35 px-3 py-2 text-[13px] font-medium text-foreground/40 transition-colors hover:text-foreground/62 disabled:pointer-events-none disabled:opacity-25"
           >
             Next

@@ -448,43 +448,67 @@ export async function addFlashcards(
     .eq('user_id', user.id)
     .maybeSingle()
 
-  // Build dedup context from existing cards
-  const existingFronts = existingCards.map(c => `- ${c.front}`).join('\n')
-  const existingTopics = [...new Set(existingCards.map(c => c.topic))]
-
-  const userPrompt = analysis
-    ? buildAddPromptFromAnalysis(doc.title, analysis as DocumentAnalysis, additionalCount, existingFronts, existingTopics)
-    : buildAddPromptFromText(doc.title, doc.extracted_text, additionalCount, existingFronts)
-
-  // Scale max_tokens with requested count; cap at 4000 to stay well within gpt-4o-mini limits
-  const maxTokens = Math.min(4000, additionalCount * 100 + 600)
-  const parsed = await callOpenAI(userPrompt, maxTokens)
-  const newRawCards = safeCards(parsed.cards)
-  if (newRawCards.length === 0) {
-    throw new Error('No additional flashcards were generated. Please try again.')
-  }
-
   const graphNodes = analysis
     ? ((analysis as DocumentAnalysis).concept_graph?.nodes ?? [])
     : []
 
-  const enrichedNew = enrichWithConceptIds(newRawCards, graphNodes)
+  const existingTopics = [...new Set(existingCards.map(c => c.topic))]
 
-  // App-layer normalized dedup: remove exact and near-exact front duplicates before persistence.
-  // Catches whitespace/case variants. Does not catch semantic duplicates (different wording, same
-  // concept) — those require embedding infrastructure deferred to a later phase.
-  const existingNormalized = new Set(existingCards.map(c => normalizeCardFront(c.front)))
-  const deduplicatedNew = enrichedNew.filter(c => !existingNormalized.has(normalizeCardFront(c.front)))
+  // ── Bounded top-up generation with within-batch dedup ────────────────────
+  // One Set tracks all normalized fronts (existing + already accepted).
+  // Cards are accepted one-by-one so later candidates in the same batch are
+  // compared against all previously accepted fronts too.
+  // We retry up to MAX_ATTEMPTS times, each time requesting only the remaining
+  // count and giving the model the full exclusion list.
+  // If after all attempts we still have fewer than requested: zero cards are
+  // persisted and a clear user-facing error is returned.
 
-  if (deduplicatedNew.length === 0) {
+  const MAX_ATTEMPTS = 3
+  const seenNormalized = new Set(existingCards.map(c => normalizeCardFront(c.front)))
+  const accepted: FlashcardItem[] = []
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS && accepted.length < additionalCount; attempt++) {
+    const remaining = additionalCount - accepted.length
+
+    // Exclusion context includes existing deck AND all cards accepted so far
+    const allExcludedFronts = [
+      ...existingCards.map(c => `- ${c.front}`),
+      ...accepted.map(c => `- ${c.front}`),
+    ].join('\n')
+
+    // Topics already covered (existing + accepted) to guide prompt diversity
+    const coveredTopics = [...new Set([...existingTopics, ...accepted.map(c => c.topic)])]
+
+    const prompt = analysis
+      ? buildAddPromptFromAnalysis(doc.title, analysis as DocumentAnalysis, remaining, allExcludedFronts, coveredTopics)
+      : buildAddPromptFromText(doc.title, doc.extracted_text, remaining, allExcludedFronts)
+
+    const maxTokens = Math.min(4000, remaining * 100 + 600)
+    // callOpenAI throws immediately on auth/rate errors; those propagate without retry
+    const parsed = await callOpenAI(prompt, maxTokens)
+    const newRaw = safeCards(parsed.cards)
+    const newEnriched = enrichWithConceptIds(newRaw, graphNodes)
+
+    for (const c of newEnriched) {
+      if (accepted.length >= additionalCount) break
+      const key = normalizeCardFront(c.front)
+      if (!seenNormalized.has(key)) {
+        seenNormalized.add(key)
+        accepted.push(c)
+      }
+    }
+  }
+
+  if (accepted.length < additionalCount) {
     throw new Error(
-      'All generated cards were exact duplicates of existing cards. Try requesting different topics or difficulty.',
+      `MoLis couldn't create ${additionalCount} distinct cards from this source. Try a smaller number.`,
     )
   }
 
+  // Persist exactly additionalCount unique cards — no partial appends
   const { data: updated, error: rpcError } = await supabase.rpc('append_flashcards', {
     p_document_id:    documentId,
-    p_new_cards:      deduplicatedNew,
+    p_new_cards:      accepted,
     p_expected_count: existingCards.length,
   })
 
